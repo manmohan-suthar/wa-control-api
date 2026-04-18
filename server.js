@@ -41,6 +41,10 @@ CampaignService.setSocketIO(io);
 app.use(cors());
 app.use(express.json());
 
+app.get("/", (req, res) => {
+  res.send("WhatsApp Campaign API is running");
+});
+
 // Serve uploaded files
 app.use("/uploads", express.static("uploads"));
 
