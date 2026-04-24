@@ -20,4 +20,7 @@ router.post("/:id/restart", authMiddleware, campaignController.restartCampaign);
 // Campaign Report
 router.get("/:id/report", authMiddleware, campaignController.getCampaignReport);
 
+// Update campaign schedule / repeat / delay settings
+router.patch("/:id/schedule", authMiddleware, campaignController.updateCampaignSchedule);
+
 export default router;

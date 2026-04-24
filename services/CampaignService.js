@@ -335,9 +335,13 @@ class CampaignService {
       throw new Error("Session is not connected");
     }
 
-    let jid = phoneNumber.replace(/\D/g, "");
-    if (jid.length === 10) {
-      jid = "91" + jid;
+    // If a full JID is passed (contains @), use it as-is; otherwise normalise digits
+    let jid;
+    if (String(phoneNumber).includes("@")) {
+      jid = phoneNumber;
+    } else {
+      jid = String(phoneNumber).replace(/\D/g, "");
+      if (jid.length === 10) jid = "91" + jid;
     }
 
     const msgDoc = new Message({

@@ -65,6 +65,7 @@ const userSchema = new mongoose.Schema(
       weeklySummary: { type: Boolean, default: false },
       marketing: { type: Boolean, default: false },
     },
+    chatPasscodeHash: { type: String, default: null, select: false },
   },
   {
     timestamps: true,

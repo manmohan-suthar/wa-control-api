@@ -1,4 +1,6 @@
 export { default as User } from "./User.js";
+export { default as WaChat } from "./WaChat.js";
+export { default as WaChatMessage } from "./WaChatMessage.js";
 export { default as WhatsAppSession } from "./WhatsAppSession.js";
 export { default as Message } from "./Message.js";
 export { default as Campaign } from "./Campaign.js";

@@ -3,8 +3,28 @@ import bcrypt from "bcryptjs";
 import authMiddleware from "../middleware/auth.js";
 import User from "../models/User.js";
 import Notification from "../models/Notification.js";
+import MediaSettings from "../models/MediaSettings.js";
 
 const router = express.Router();
+
+// ── Media Upload Limits (public for all authenticated users) ─────────────────
+router.get("/media-limits", authMiddleware, async (req, res) => {
+  try {
+    let settings = await MediaSettings.findOne({ key: "global" });
+    if (!settings) settings = await MediaSettings.create({ key: "global" });
+    res.json({
+      success: true,
+      data: {
+        image:    settings.image?.maxSizeMB    ?? 10,
+        video:    settings.video?.maxSizeMB    ?? 50,
+        audio:    settings.audio?.maxSizeMB    ?? 20,
+        document: settings.document?.maxSizeMB ?? 25,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 

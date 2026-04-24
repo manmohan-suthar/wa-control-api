@@ -19,6 +19,10 @@ import paymentRoutes from "./routes/payments.js";
 import analyticsRoutes from "./routes/analytics.js";
 import settingsRoutes from "./routes/settings.js";
 import adminRoutes from "./routes/admin.js";
+import chatRoutes from "./routes/chats.js";
+import aiAgentRoutes from "./routes/aiAgent.js";
+import flowRoutes from "./routes/flows.js";
+import metaRoutes from "./meta/routes/index.js";
 import WhatsAppService from "./services/WhatsAppService.js";
 import CampaignService from "./services/CampaignService.js";
 import SubscriptionService from "./services/SubscriptionService.js";
@@ -60,6 +64,10 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/chats", chatRoutes);
+app.use("/api/ai-agent", aiAgentRoutes);
+app.use("/api/flows", flowRoutes);
+app.use("/api/meta", metaRoutes);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -90,7 +98,8 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI =
-  process.env.MONGODB_URI || "mongodb://localhost:27017/whatsapp-campaign";
+  process.env.MONGODB_URI ||
+  "mongodb+srv://admin:admin@cmr0.3uulrrh.mongodb.net";
 
 const start = async () => {
   try {

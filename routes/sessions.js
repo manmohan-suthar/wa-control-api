@@ -11,6 +11,7 @@ router.get("/:id", authMiddleware, sessionController.getSession);
 router.get("/:id/qr", authMiddleware, sessionController.getSessionQR);
 router.delete("/:id", authMiddleware, sessionController.deleteSession);
 router.post("/:id/logout", authMiddleware, sessionController.logoutSession);
+router.post("/:id/reconnect", authMiddleware, sessionController.reconnectSession);
 router.get(
   "/:id/messages",
   authMiddleware,

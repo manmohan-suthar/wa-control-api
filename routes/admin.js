@@ -9,6 +9,10 @@ import ApiKey from "../models/ApiKey.js";
 import UserSubscription from "../models/UserSubscription.js";
 import SubscriptionPlan from "../models/SubscriptionPlan.js";
 import MediaCollection from "../models/Media.js";
+import MediaSettings from "../models/MediaSettings.js";
+import OpenRouterSettings from "../models/OpenRouterSettings.js";
+import MetaSystemSettings from "../meta/models/MetaSystemSettings.js";
+import Flow from "../models/Flow.js";
 
 const router = express.Router();
 
@@ -25,7 +29,22 @@ function dayLabel(date) {
 }
 
 function fmtDate(d) {
-  return new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return new Date(d).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function maskApiKey(key = "") {
+  if (!key || key.length < 10) return "";
+  return `${key.slice(0, 6)}...${key.slice(-4)}`;
+}
+
+function maskSecret(secret = "") {
+  if (!secret) return "";
+  if (secret.length <= 6) return "••••••";
+  return `${secret.slice(0, 2)}••••${secret.slice(-2)}`;
 }
 
 // ── Overview Dashboard ────────────────────────────────────────────────────────
@@ -37,10 +56,14 @@ router.get("/overview", authMiddleware, async (req, res) => {
     const since = new Date(Date.now() - days * 86400000);
 
     const [
-      totalUsers, newUsersCount,
-      totalSessions, connectedSessions,
-      totalMessages, recentMessageCount,
-      totalApiKeys, activeApiKeys,
+      totalUsers,
+      newUsersCount,
+      totalSessions,
+      connectedSessions,
+      totalMessages,
+      recentMessageCount,
+      totalApiKeys,
+      activeApiKeys,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ createdAt: { $gte: since } }),
@@ -93,7 +116,9 @@ router.get("/overview", authMiddleware, async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
     const apiMap = {};
-    apiDaily.forEach((d) => { apiMap[d._id] = d.requests; });
+    apiDaily.forEach((d) => {
+      apiMap[d._id] = d.requests;
+    });
     const apiChart = dailyChart.map((d, i) => {
       const date = new Date(Date.now() - (days - 1 - i) * 86400000);
       const key = date.toISOString().slice(0, 10);
@@ -103,7 +128,14 @@ router.get("/overview", authMiddleware, async (req, res) => {
     // Plan distribution
     const planCounts = await UserSubscription.aggregate([
       { $match: { status: { $in: ["active", "trial"] } } },
-      { $lookup: { from: "subscriptionplans", localField: "planId", foreignField: "_id", as: "plan" } },
+      {
+        $lookup: {
+          from: "subscriptionplans",
+          localField: "planId",
+          foreignField: "_id",
+          as: "plan",
+        },
+      },
       { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
       { $group: { _id: "$plan.name", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
@@ -150,7 +182,8 @@ router.get("/overview", authMiddleware, async (req, res) => {
       { $unwind: { path: "$camp", preserveNullAndEmptyArrays: true } },
       {
         $project: {
-          status: 1, createdAt: 1,
+          status: 1,
+          createdAt: 1,
           sessionName: "$sess.name",
           userName: "$owner.name",
           userEmail: "$owner.email",
@@ -165,7 +198,12 @@ router.get("/overview", authMiddleware, async (req, res) => {
       action: m.campaignName ? `Campaign: ${m.campaignName}` : "Single message",
       session: m.sessionName || "—",
       time: m.createdAt,
-      status: m.status === "delivered" ? "success" : m.status === "failed" ? "error" : "info",
+      status:
+        m.status === "delivered"
+          ? "success"
+          : m.status === "failed"
+            ? "error"
+            : "info",
     }));
 
     // Top users by message count — via sessions aggregate
@@ -211,10 +249,14 @@ router.get("/overview", authMiddleware, async (req, res) => {
       success: true,
       data: {
         stats: {
-          totalUsers, newUsersCount,
-          totalSessions, connectedSessions,
-          recentMessageCount, totalMessages,
-          activeApiKeys, totalApiKeys,
+          totalUsers,
+          newUsersCount,
+          totalSessions,
+          connectedSessions,
+          recentMessageCount,
+          totalMessages,
+          activeApiKeys,
+          totalApiKeys,
         },
         dailyChart,
         apiChart,
@@ -240,11 +282,20 @@ router.get("/users", authMiddleware, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const query = search
-      ? { $or: [{ name: { $regex: search, $options: "i" } }, { email: { $regex: search, $options: "i" } }] }
+      ? {
+          $or: [
+            { name: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
+          ],
+        }
       : {};
 
     const [users, total] = await Promise.all([
-      User.find(query, "-password").sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      User.find(query, "-password")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       User.countDocuments(query),
     ]);
 
@@ -252,28 +303,52 @@ router.get("/users", authMiddleware, async (req, res) => {
 
     // Platform-wide summary stats (always across ALL users, not just current page)
     const [
-      activeCount, inactiveCount, suspendedCount,
-      planDistribution, newThisWeek,
-      sessionCounts, msgCounts, subs,
+      activeCount,
+      inactiveCount,
+      suspendedCount,
+      planDistribution,
+      newThisWeek,
+      sessionCounts,
+      msgCounts,
+      subs,
     ] = await Promise.all([
       User.countDocuments({ status: "active" }),
-      User.countDocuments({ status: { $in: ["inactive", null, undefined] }, $or: [{ status: "inactive" }, { status: { $exists: false } }] }),
+      User.countDocuments({
+        status: { $in: ["inactive", null, undefined] },
+        $or: [{ status: "inactive" }, { status: { $exists: false } }],
+      }),
       User.countDocuments({ status: "suspended" }),
       // Count users per plan
       UserSubscription.aggregate([
-        { $lookup: { from: "subscriptionplans", localField: "planId", foreignField: "_id", as: "plan" } },
+        {
+          $lookup: {
+            from: "subscriptionplans",
+            localField: "planId",
+            foreignField: "_id",
+            as: "plan",
+          },
+        },
         { $unwind: { path: "$plan", preserveNullAndEmptyArrays: true } },
         { $group: { _id: "$plan.name", count: { $sum: 1 } } },
         { $sort: { count: -1 } },
       ]),
-      User.countDocuments({ createdAt: { $gte: new Date(Date.now() - 7 * 86400000) } }),
+      User.countDocuments({
+        createdAt: { $gte: new Date(Date.now() - 7 * 86400000) },
+      }),
       // Per-page session + msg counts
       WhatsAppSession.aggregate([
         { $match: { userId: { $in: userIds } } },
         { $group: { _id: "$userId", count: { $sum: 1 } } },
       ]),
       Message.aggregate([
-        { $lookup: { from: "whatsappsessions", localField: "sessionId", foreignField: "_id", as: "sess" } },
+        {
+          $lookup: {
+            from: "whatsappsessions",
+            localField: "sessionId",
+            foreignField: "_id",
+            as: "sess",
+          },
+        },
         { $unwind: { path: "$sess", preserveNullAndEmptyArrays: false } },
         { $match: { "sess.userId": { $in: userIds } } },
         { $group: { _id: "$sess.userId", count: { $sum: 1 } } },
@@ -287,11 +362,17 @@ router.get("/users", authMiddleware, async (req, res) => {
     const realActive = total - suspendedCount;
 
     const sessMap = {};
-    sessionCounts.forEach((s) => { sessMap[String(s._id)] = s.count; });
+    sessionCounts.forEach((s) => {
+      sessMap[String(s._id)] = s.count;
+    });
     const msgMap = {};
-    msgCounts.forEach((m) => { msgMap[String(m._id)] = m.count; });
+    msgCounts.forEach((m) => {
+      msgMap[String(m._id)] = m.count;
+    });
     const subMap = {};
-    subs.forEach((s) => { subMap[String(s.userId)] = s; });
+    subs.forEach((s) => {
+      subMap[String(s.userId)] = s;
+    });
 
     const rows = users.map((u) => ({
       ...u,
@@ -309,7 +390,16 @@ router.get("/users", authMiddleware, async (req, res) => {
       planDistribution,
     };
 
-    res.json({ success: true, data: { users: rows, total, page, pages: Math.ceil(total / limit), summary } });
+    res.json({
+      success: true,
+      data: {
+        users: rows,
+        total,
+        page,
+        pages: Math.ceil(total / limit),
+        summary,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -321,16 +411,30 @@ router.post("/users", authMiddleware, async (req, res) => {
 
     const { name, email, password, role = "user" } = req.body;
     if (!name || !email || !password) {
-      return res.status(400).json({ success: false, error: "name, email and password are required" });
+      return res.status(400).json({
+        success: false,
+        error: "name, email and password are required",
+      });
     }
     if (password.length < 6) {
-      return res.status(400).json({ success: false, error: "Password must be at least 6 characters" });
+      return res.status(400).json({
+        success: false,
+        error: "Password must be at least 6 characters",
+      });
     }
 
     const existing = await User.findOne({ email: email.toLowerCase().trim() });
-    if (existing) return res.status(400).json({ success: false, error: "Email already exists" });
+    if (existing)
+      return res
+        .status(400)
+        .json({ success: false, error: "Email already exists" });
 
-    const user = await User.create({ name, email: email.toLowerCase().trim(), password, role });
+    const user = await User.create({
+      name,
+      email: email.toLowerCase().trim(),
+      password,
+      role,
+    });
     const { password: _, ...safe } = user.toObject();
     res.status(201).json({ success: true, data: safe });
   } catch (err) {
@@ -349,8 +453,14 @@ router.put("/users/:id", authMiddleware, async (req, res) => {
     }
     if (payload.email) payload.email = payload.email.toLowerCase().trim();
 
-    const user = await User.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true }).select("-password").lean();
-    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    const user = await User.findByIdAndUpdate(req.params.id, payload, {
+      new: true,
+      runValidators: true,
+    })
+      .select("-password")
+      .lean();
+    if (!user)
+      return res.status(404).json({ success: false, error: "User not found" });
     res.json({ success: true, data: user });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -361,7 +471,9 @@ router.delete("/users/:id", authMiddleware, async (req, res) => {
   try {
     if (!ensureAdmin(req, res)) return;
     if (String(req.user._id) === req.params.id) {
-      return res.status(400).json({ success: false, error: "You cannot delete your own account" });
+      return res
+        .status(400)
+        .json({ success: false, error: "You cannot delete your own account" });
     }
     await User.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: "User deleted" });
@@ -386,7 +498,9 @@ router.get("/sessions", authMiddleware, async (req, res) => {
       { $group: { _id: "$sessionId", count: { $sum: 1 } } },
     ]);
     const msgMap = {};
-    msgCounts.forEach((m) => { msgMap[String(m._id)] = m.count; });
+    msgCounts.forEach((m) => {
+      msgMap[String(m._id)] = m.count;
+    });
 
     const rows = sessions.map((s) => ({
       _id: s._id,
@@ -402,11 +516,16 @@ router.get("/sessions", authMiddleware, async (req, res) => {
 
     const connected = rows.filter((s) => s.status === "connected").length;
     const disconnected = rows.filter((s) => s.status === "disconnected").length;
-    const connecting = rows.filter((s) => ["connecting", "pending"].includes(s.status)).length;
+    const connecting = rows.filter((s) =>
+      ["connecting", "pending"].includes(s.status),
+    ).length;
 
     res.json({
       success: true,
-      data: { sessions: rows, stats: { total: rows.length, connected, disconnected, connecting } },
+      data: {
+        sessions: rows,
+        stats: { total: rows.length, connected, disconnected, connecting },
+      },
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -440,10 +559,15 @@ router.get("/campaigns", authMiddleware, async (req, res) => {
     ]);
 
     const filtered = search
-      ? campaigns.filter((c) =>
-          c.name.toLowerCase().includes(search.toLowerCase()) ||
-          (c.userId?.name || "").toLowerCase().includes(search.toLowerCase()) ||
-          (c.userId?.email || "").toLowerCase().includes(search.toLowerCase())
+      ? campaigns.filter(
+          (c) =>
+            c.name.toLowerCase().includes(search.toLowerCase()) ||
+            (c.userId?.name || "")
+              .toLowerCase()
+              .includes(search.toLowerCase()) ||
+            (c.userId?.email || "")
+              .toLowerCase()
+              .includes(search.toLowerCase()),
         )
       : campaigns;
 
@@ -453,7 +577,9 @@ router.get("/campaigns", authMiddleware, async (req, res) => {
       Campaign.countDocuments({ status: "completed" }),
       Campaign.countDocuments({ status: "paused" }),
     ]);
-    const totalSent = await Campaign.aggregate([{ $group: { _id: null, sent: { $sum: "$stats.sent" } } }]);
+    const totalSent = await Campaign.aggregate([
+      { $group: { _id: null, sent: { $sum: "$stats.sent" } } },
+    ]);
 
     res.json({
       success: true,
@@ -463,7 +589,10 @@ router.get("/campaigns", authMiddleware, async (req, res) => {
         page,
         pages: Math.ceil(total / limit),
         stats: {
-          running, scheduled, completed, paused,
+          running,
+          scheduled,
+          completed,
+          paused,
           totalSent: totalSent[0]?.sent || 0,
         },
       },
@@ -495,7 +624,11 @@ router.get("/messages", authMiddleware, async (req, res) => {
 
     const [messages, total] = await Promise.all([
       Message.find(query)
-        .populate({ path: "sessionId", select: "name userId", populate: { path: "userId", select: "name email" } })
+        .populate({
+          path: "sessionId",
+          select: "name userId",
+          populate: { path: "userId", select: "name email" },
+        })
         .populate("campaignId", "name")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -524,7 +657,12 @@ router.get("/messages", authMiddleware, async (req, res) => {
         total,
         page,
         pages: Math.ceil(total / limit),
-        stats: { total: await Message.countDocuments(), delivered, failed, pending },
+        stats: {
+          total: await Message.countDocuments(),
+          delivered,
+          failed,
+          pending,
+        },
         activeCampaigns,
       },
     });
@@ -544,7 +682,9 @@ router.get("/api-usage", authMiddleware, async (req, res) => {
     const [totalKeys, activeKeys, totalRequests] = await Promise.all([
       ApiKey.countDocuments(),
       ApiKey.countDocuments({ status: "active" }),
-      ApiKey.aggregate([{ $group: { _id: null, total: { $sum: "$callCount" } } }]),
+      ApiKey.aggregate([
+        { $group: { _id: null, total: { $sum: "$callCount" } } },
+      ]),
     ]);
 
     // Daily single-message API calls
@@ -559,12 +699,18 @@ router.get("/api-usage", authMiddleware, async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
     const apiMap = {};
-    dailyApi.forEach((d) => { apiMap[d._id] = d.requests; });
+    dailyApi.forEach((d) => {
+      apiMap[d._id] = d.requests;
+    });
     const weekChart = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(Date.now() - i * 86400000);
       const key = d.toISOString().slice(0, 10);
-      weekChart.push({ name: dayLabel(d), requests: apiMap[key] || 0, errors: 0 });
+      weekChart.push({
+        name: dayLabel(d),
+        requests: apiMap[key] || 0,
+        errors: 0,
+      });
     }
 
     // Top API consumers by callCount
@@ -585,10 +731,16 @@ router.get("/api-usage", authMiddleware, async (req, res) => {
     const byUser = {};
     topKeys.forEach((k) => {
       const uid = String(k.userId?._id || "");
-      if (!byUser[uid]) byUser[uid] = { name: k.userId?.name || k.userId?.email || "Unknown", calls: 0 };
+      if (!byUser[uid])
+        byUser[uid] = {
+          name: k.userId?.name || k.userId?.email || "Unknown",
+          calls: 0,
+        };
       byUser[uid].calls += k.callCount;
     });
-    const topUsersList = Object.values(byUser).sort((a, b) => b.calls - a.calls).slice(0, 5);
+    const topUsersList = Object.values(byUser)
+      .sort((a, b) => b.calls - a.calls)
+      .slice(0, 5);
     const maxUserCalls = topUsersList[0]?.calls || 1;
     const topConsumers = topUsersList.map((u) => ({
       name: u.name,
@@ -661,7 +813,20 @@ router.get("/analytics", authMiddleware, async (req, res) => {
     ]);
 
     // Build month labels
-    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const monthNames = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
     const monthLabels = [];
     for (let i = months - 1; i >= 0; i--) {
       const d = new Date();
@@ -673,11 +838,20 @@ router.get("/analytics", authMiddleware, async (req, res) => {
     }
 
     const msgMonthMap = {};
-    monthlyMsgs.forEach((m) => { msgMonthMap[m._id] = { messages: m.messages, sessions: m.sessions.length }; });
+    monthlyMsgs.forEach((m) => {
+      msgMonthMap[m._id] = {
+        messages: m.messages,
+        sessions: m.sessions.length,
+      };
+    });
     const userMonthMap = {};
-    monthlyUsers.forEach((m) => { userMonthMap[m._id] = m.count; });
+    monthlyUsers.forEach((m) => {
+      userMonthMap[m._id] = m.count;
+    });
     const apiMonthMap = {};
-    monthlyApi.forEach((m) => { apiMonthMap[m._id] = m.requests; });
+    monthlyApi.forEach((m) => {
+      apiMonthMap[m._id] = m.requests;
+    });
 
     const activityChart = monthLabels.map((m) => ({
       name: m.name,
@@ -695,12 +869,16 @@ router.get("/analytics", authMiddleware, async (req, res) => {
     }));
 
     // Totals
-    const [totalUsers, totalMessages, peakSessions, totalApiCalls] = await Promise.all([
-      User.countDocuments(),
-      Message.countDocuments({ createdAt: { $gte: since } }),
-      WhatsAppSession.countDocuments({ createdAt: { $gte: since } }),
-      Message.countDocuments({ createdAt: { $gte: since }, messageType: "single" }),
-    ]);
+    const [totalUsers, totalMessages, peakSessions, totalApiCalls] =
+      await Promise.all([
+        User.countDocuments(),
+        Message.countDocuments({ createdAt: { $gte: since } }),
+        WhatsAppSession.countDocuments({ createdAt: { $gte: since } }),
+        Message.countDocuments({
+          createdAt: { $gte: since },
+          messageType: "single",
+        }),
+      ]);
 
     // Previous period for trends
     const prevSince = new Date(since);
@@ -710,8 +888,14 @@ router.get("/analytics", authMiddleware, async (req, res) => {
       Message.countDocuments({ createdAt: { $gte: prevSince, $lt: since } }),
     ]);
 
-    const userTrend = prevUsers > 0 ? `+${Math.round(((totalUsers - prevUsers) / prevUsers) * 100)}%` : "+100%";
-    const msgTrend = prevMessages > 0 ? `+${Math.round(((totalMessages - prevMessages) / prevMessages) * 100)}%` : "+100%";
+    const userTrend =
+      prevUsers > 0
+        ? `+${Math.round(((totalUsers - prevUsers) / prevUsers) * 100)}%`
+        : "+100%";
+    const msgTrend =
+      prevMessages > 0
+        ? `+${Math.round(((totalMessages - prevMessages) / prevMessages) * 100)}%`
+        : "+100%";
 
     // Location-based distribution (from User.location)
     const locationDist = await User.aggregate([
@@ -730,7 +914,14 @@ router.get("/analytics", authMiddleware, async (req, res) => {
     res.json({
       success: true,
       data: {
-        stats: { totalUsers, totalMessages, peakSessions, totalApiCalls, userTrend, msgTrend },
+        stats: {
+          totalUsers,
+          totalMessages,
+          peakSessions,
+          totalApiCalls,
+          userTrend,
+          msgTrend,
+        },
         activityChart,
         apiChart,
         userGrowth,
@@ -767,20 +958,36 @@ router.get("/media", authMiddleware, async (req, res) => {
       }
       const fileCount =
         (col.media?.length || 0) +
-        (col.subcollections || []).reduce((s, sc) => s + (sc.media?.length || 0), 0);
+        (col.subcollections || []).reduce(
+          (s, sc) => s + (sc.media?.length || 0),
+          0,
+        );
       userMap[uid].collections.push({ ...col, fileCount });
       userMap[uid].totalFiles += fileCount;
       userMap[uid].totalSize += col.totalSize || 0;
     }
 
-    const users = Object.values(userMap).sort((a, b) => b.totalFiles - a.totalFiles);
+    const users = Object.values(userMap).sort(
+      (a, b) => b.totalFiles - a.totalFiles,
+    );
 
     // Overall stats
     const totalCollections = collections.length;
     const totalFiles = users.reduce((s, u) => s + u.totalFiles, 0);
     const totalSize = users.reduce((s, u) => s + u.totalSize, 0);
 
-    res.json({ success: true, data: { users, stats: { totalUsers: users.length, totalCollections, totalFiles, totalSize } } });
+    res.json({
+      success: true,
+      data: {
+        users,
+        stats: {
+          totalUsers: users.length,
+          totalCollections,
+          totalFiles,
+          totalSize,
+        },
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -790,10 +997,14 @@ router.post("/media/collection", authMiddleware, async (req, res) => {
   try {
     if (!ensureAdmin(req, res)) return;
     const { userId, name, colorId } = req.body;
-    if (!userId || !name) return res.status(400).json({ success: false, error: "userId and name are required" });
+    if (!userId || !name)
+      return res
+        .status(400)
+        .json({ success: false, error: "userId and name are required" });
 
     const user = await User.findById(userId).lean();
-    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    if (!user)
+      return res.status(404).json({ success: false, error: "User not found" });
 
     const col = new MediaCollection({
       userId,
@@ -805,6 +1016,262 @@ router.post("/media/collection", authMiddleware, async (req, res) => {
     });
     await col.save();
     res.json({ success: true, data: col });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Media Upload Size Settings ─────────────────────────────────────────────────
+router.get("/media-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    let settings = await MediaSettings.findOne({ key: "global" });
+    if (!settings) settings = await MediaSettings.create({ key: "global" });
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/media-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const { image, video, audio, document } = req.body;
+    const update = {};
+    if (image?.maxSizeMB !== undefined)
+      update["image.maxSizeMB"] = Number(image.maxSizeMB);
+    if (video?.maxSizeMB !== undefined)
+      update["video.maxSizeMB"] = Number(video.maxSizeMB);
+    if (audio?.maxSizeMB !== undefined)
+      update["audio.maxSizeMB"] = Number(audio.maxSizeMB);
+    if (document?.maxSizeMB !== undefined)
+      update["document.maxSizeMB"] = Number(document.maxSizeMB);
+    const settings = await MediaSettings.findOneAndUpdate(
+      { key: "global" },
+      { $set: update },
+      { upsert: true, new: true, runValidators: true },
+    );
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ── OpenRouter Settings ──────────────────────────────────────────────────────
+router.get("/openrouter-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    let settings = await OpenRouterSettings.findOne({ key: "global" }).lean();
+    if (!settings) {
+      settings = await OpenRouterSettings.create({ key: "global" });
+      settings = settings.toObject();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        provider: settings.provider || "openrouter",
+        model: settings.model || "openai/gpt-4o-mini",
+        hasApiKey: !!settings.apiKey,
+        maskedApiKey: maskApiKey(settings.apiKey),
+        updatedAt: settings.updatedAt,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/openrouter-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const { apiKey, model } = req.body || {};
+    const update = {};
+
+    if (typeof model === "string") {
+      const nextModel = model.trim();
+      if (!nextModel) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Model is required" });
+      }
+      update.model = nextModel;
+    }
+
+    if (typeof apiKey === "string") {
+      const nextKey = apiKey.trim();
+      if (nextKey && !nextKey.startsWith("sk-or-v1-")) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid OpenRouter API key format" });
+      }
+      update.apiKey = nextKey;
+    }
+
+    if (!Object.keys(update).length) {
+      return res
+        .status(400)
+        .json({ success: false, error: "No settings provided" });
+    }
+
+    const settings = await OpenRouterSettings.findOneAndUpdate(
+      { key: "global" },
+      {
+        $set: {
+          provider: "openrouter",
+          ...update,
+        },
+      },
+      { upsert: true, new: true, runValidators: true },
+    );
+
+    res.json({
+      success: true,
+      data: {
+        provider: settings.provider,
+        model: settings.model,
+        hasApiKey: !!settings.apiKey,
+        maskedApiKey: maskApiKey(settings.apiKey),
+        updatedAt: settings.updatedAt,
+      },
+      message: "OpenRouter settings saved",
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ── Meta OAuth Settings ────────────────────────────────────────────────────
+router.get("/meta-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    let settings = await MetaSystemSettings.findOne()
+      .select("+metaAppSecret")
+      .lean();
+    if (!settings) {
+      const created = await MetaSystemSettings.create({});
+      settings = created.toObject();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        metaAppId: settings.metaAppId || "",
+        apiVersion: settings.apiVersion || "v19.0",
+        hasAppSecret: !!settings.metaAppSecret,
+        maskedAppSecret: maskSecret(settings.metaAppSecret || ""),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/meta-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const { metaAppId, metaAppSecret, apiVersion } = req.body || {};
+    const update = {};
+
+    if (typeof metaAppId === "string") {
+      update.metaAppId = metaAppId.trim();
+    }
+
+    if (typeof apiVersion === "string") {
+      const nextVersion = apiVersion.trim();
+      if (nextVersion) update.apiVersion = nextVersion;
+    }
+
+    if (typeof metaAppSecret === "string") {
+      update.metaAppSecret = metaAppSecret.trim();
+    }
+
+    if (!Object.keys(update).length) {
+      return res
+        .status(400)
+        .json({ success: false, error: "No settings provided" });
+    }
+
+    const settings = await MetaSystemSettings.findOneAndUpdate(
+      {},
+      { $set: update },
+      { upsert: true, new: true, runValidators: true },
+    )
+      .select("+metaAppSecret")
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        metaAppId: settings.metaAppId || "",
+        apiVersion: settings.apiVersion || "v19.0",
+        hasAppSecret: !!settings.metaAppSecret,
+        maskedAppSecret: maskSecret(settings.metaAppSecret || ""),
+      },
+      message: "Meta settings saved",
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ── Admin: Flow Management ────────────────────────────────────────────────────
+
+// GET all flows across all users
+router.get("/flows", authMiddleware, async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const { search = "", status = "", page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const filter = {};
+    if (status && status !== "all") filter.status = status;
+    if (search) filter.name = { $regex: search, $options: "i" };
+
+    const [flows, total] = await Promise.all([
+      Flow.find(filter)
+        .populate("userId", "name email")
+        .populate("sessionId", "name phoneNumber status")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Flow.countDocuments(filter),
+    ]);
+
+    res.json({ success: true, flows, total, page: parseInt(page), limit: parseInt(limit) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE a flow (admin)
+router.delete("/flows/:flowId", authMiddleware, async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    const deleted = await Flow.findByIdAndDelete(req.params.flowId);
+    if (!deleted) return res.status(404).json({ success: false, error: "Flow not found" });
+    res.json({ success: true, message: "Flow deleted" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PATCH toggle flow status (admin)
+router.patch("/flows/:flowId/status", authMiddleware, async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    const { status } = req.body;
+    if (!["Active", "Draft", "Archived"].includes(status)) {
+      return res.status(400).json({ success: false, error: "Invalid status" });
+    }
+    const flow = await Flow.findByIdAndUpdate(
+      req.params.flowId,
+      { status },
+      { new: true }
+    ).populate("userId", "name email").populate("sessionId", "name phoneNumber status");
+    if (!flow) return res.status(404).json({ success: false, error: "Flow not found" });
+    res.json({ success: true, flow });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

@@ -18,6 +18,8 @@ const numberListSchema = new mongoose.Schema(
       type: String,
       default: 'bg-blue-500',
     },
+    variables: [{ type: String, trim: true }],
+    contactData: [{ type: mongoose.Schema.Types.Mixed }],
   },
   { timestamps: true },
 );

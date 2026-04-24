@@ -6,16 +6,25 @@ import { sendSubscriptionError } from "../utils/subscription.js";
 
 export const createSession = async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, enableChatView = false, chatPasscode = "" } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: "Session name is required" });
     }
 
+    if (enableChatView && String(chatPasscode).length < 4) {
+      return res
+        .status(400)
+        .json({ error: "Chat passcode must be at least 4 characters" });
+    }
+
     await SubscriptionService.assertResourceLimit(req.user, "sessions", 1);
 
     console.log("Creating session for user:", req.user?._id, "name:", name);
-    const result = await WhatsAppService.createSession(req.user._id, name);
+    const result = await WhatsAppService.createSession(req.user._id, name, {
+      enableChatView: !!enableChatView,
+      chatPasscode: String(chatPasscode || ""),
+    });
 
     res.status(201).json(result);
   } catch (err) {
@@ -42,6 +51,7 @@ export const listSessions = async (req, res) => {
           status: statusInfo?.status || session.status,
           phone: session.phoneNumber,
           phoneNumber: session.phoneNumber,
+          chatViewEnabled: !!session.chatViewEnabled,
           lastConnected: session.lastConnected,
           createdAt: session.createdAt,
         };
@@ -74,6 +84,7 @@ export const getSession = async (req, res) => {
       name: session.name,
       status: statusInfo?.status || session.status,
       phoneNumber: session.phoneNumber,
+      chatViewEnabled: !!session.chatViewEnabled,
       lastConnected: session.lastConnected,
       createdAt: session.createdAt,
     });
@@ -128,6 +139,27 @@ export const getSessionQR = async (req, res) => {
   }
 };
 
+export const reconnectSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const session = await WhatsAppSession.findOne({
+      sessionId: id,
+      userId: req.user._id,
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const result = await WhatsAppService.reconnectSession(id);
+
+    res.json({ success: true, status: result?.status || "connecting" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 export const logoutSession = async (req, res) => {
   try {
     const { id } = req.params;
@@ -156,4 +188,5 @@ export default {
   getSessionQR,
   deleteSession,
   logoutSession,
+  reconnectSession,
 };

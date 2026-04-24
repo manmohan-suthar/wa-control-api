@@ -1,4 +1,6 @@
+import fs from "fs";
 import MediaCollection from "../models/Media.js";
+import MediaSettings from "../models/MediaSettings.js";
 import { formatFilePath } from "../utils/fileUpload.js";
 import SubscriptionService from "../services/SubscriptionService.js";
 import { sendSubscriptionError } from "../utils/subscription.js";
@@ -225,6 +227,7 @@ export const uploadToCollection = async (req, res) => {
         .json({ success: false, error: "No file provided" });
     }
 
+    await assertMediaSizeLimit(req.file);
     await SubscriptionService.assertStorageLimit(req.user, req.file.size || 0);
 
     const collection = await MediaCollection.findOne({ _id: id, userId });
@@ -252,6 +255,9 @@ export const uploadToCollection = async (req, res) => {
 
     res.status(201).json({ success: true, data: collection });
   } catch (error) {
+    if (error.statusCode === 413) {
+      return res.status(413).json({ success: false, error: error.message });
+    }
     return sendSubscriptionError(res, error, "Failed to upload media");
   }
 };
@@ -268,6 +274,7 @@ export const uploadToSubcollection = async (req, res) => {
         .json({ success: false, error: "No file provided" });
     }
 
+    await assertMediaSizeLimit(req.file);
     await SubscriptionService.assertStorageLimit(req.user, req.file.size || 0);
 
     const collection = await MediaCollection.findOne({ _id: id, userId });
@@ -302,6 +309,9 @@ export const uploadToSubcollection = async (req, res) => {
 
     res.status(201).json({ success: true, data: collection });
   } catch (error) {
+    if (error.statusCode === 413) {
+      return res.status(413).json({ success: false, error: error.message });
+    }
     return sendSubscriptionError(res, error, "Failed to upload media");
   }
 };
@@ -315,6 +325,21 @@ function getFileType(mimetype) {
   if (mimetype.includes("word") || mimetype.includes("document"))
     return "document";
   return "document";
+}
+
+async function assertMediaSizeLimit(file) {
+  const settings = await MediaSettings.findOne({ key: "global" });
+  const type = getFileType(file.mimetype);
+  // pdf/document both map to "document" limit
+  const limitKey = type === "pdf" ? "document" : type;
+  const maxMB = settings?.[limitKey]?.maxSizeMB ?? 25;
+  if (file.size > maxMB * 1024 * 1024) {
+    fs.unlinkSync(file.path);
+    throw Object.assign(
+      new Error(`${type.charAt(0).toUpperCase() + type.slice(1)} files must be under ${maxMB} MB`),
+      { statusCode: 413 },
+    );
+  }
 }
 
 function formatBytes(bytes) {

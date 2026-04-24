@@ -24,6 +24,8 @@ function formatList(list) {
     numbers: list.numbers,
     tags: list.tags,
     color: list.color,
+    variables: list.variables || [],
+    contactData: list.contactData || [],
     created: list.createdAt ? list.createdAt.toISOString().slice(0, 10) : null,
   };
 }
@@ -42,7 +44,7 @@ export const getLists = async (req, res) => {
 
 export const createList = async (req, res) => {
   try {
-    const { name, numbers = [], tags = [], color } = req.body;
+    const { name, numbers = [], tags = [], color, variables = [], contactData = [] } = req.body;
     if (!name) return res.status(400).json({ error: "name is required" });
 
     await SubscriptionService.assertResourceLimit(req.user, "numberLists", 1);
@@ -53,6 +55,8 @@ export const createList = async (req, res) => {
       numbers,
       tags,
       color: color || randomColor(),
+      variables,
+      contactData,
     });
     res.status(201).json({ list: formatList(list) });
   } catch (err) {
@@ -75,12 +79,14 @@ export const getList = async (req, res) => {
 
 export const updateList = async (req, res) => {
   try {
-    const { name, numbers, tags, color } = req.body;
+    const { name, numbers, tags, color, variables, contactData } = req.body;
     const update = {};
     if (name !== undefined) update.name = name;
     if (numbers !== undefined) update.numbers = numbers;
     if (tags !== undefined) update.tags = tags;
     if (color !== undefined) update.color = color;
+    if (variables !== undefined) update.variables = variables;
+    if (contactData !== undefined) update.contactData = contactData;
     const list = await NumberList.findOneAndUpdate(
       { _id: req.params.id, userId: req.user._id },
       update,

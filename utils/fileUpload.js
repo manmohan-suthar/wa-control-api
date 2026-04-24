@@ -55,7 +55,7 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 25 * 1024 * 1024, // 25MB max
+    fileSize: 500 * 1024 * 1024, // 500MB ceiling — per-type limits enforced in controller
   },
 });
 

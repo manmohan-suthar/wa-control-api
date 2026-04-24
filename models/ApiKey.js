@@ -46,10 +46,9 @@ const apiKeySchema = new mongoose.Schema(
       default: 0,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 apiKeySchema.index({ userId: 1, status: 1 });
-apiKeySchema.index({ keyHash: 1 });
 
 export default mongoose.model("ApiKey", apiKeySchema);

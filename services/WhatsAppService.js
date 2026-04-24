@@ -6,11 +6,19 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 import * as qrcode from "qrcode";
 import { writeFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { WhatsAppSession as SessionModel, Message } from "../models/index.js";
+import {
+  WhatsAppSession as SessionModel,
+  Message,
+  WaChat,
+  WaChatMessage,
+} from "../models/index.js";
+import { handleIncomingMessage } from "./AiAgentService.js";
+import { executeFlowOnMessage } from "../controllers/flowExecutionController.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -203,11 +211,489 @@ class WhatsAppService {
     // Save credentials
     sock.ev.on("creds.update", authState.saveCreds);
 
+    // ── In-memory contact name store (per socket lifetime) ────────────────────
+    const contactNames = new Map(); // jid → display name
+    const lidPhones = new Map(); // lid-jid → phone number (Meta linked-identity mapping)
+
+    // Extract clean phone number from a JID — returns null for @lid JIDs (not real phones)
+    const rawPhoneFrom = (jid) => {
+      if (!jid) return null;
+      if (jid.endsWith("@lid")) return null; // LID = Meta internal ID, not a phone
+      if (jid.endsWith("@g.us")) return jid; // groups keep full jid as identifier
+      return jid.replace(/@.*/, ""); // individual: strip @s.whatsapp.net
+    };
+
+    // ── contacts.upsert — build in-memory name lookup ─────────────────────────
+    sock.ev.on("contacts.upsert", (contacts) => {
+      for (const c of contacts) {
+        const name = c.name || c.notify || c.verifiedName || "";
+        if (c.id && name) contactNames.set(c.id, name);
+        // Newer WA sometimes provides the real phone number on a @lid contact
+        if (c.id && c.id.endsWith("@lid") && c.phoneNumber) {
+          lidPhones.set(c.id, c.phoneNumber.replace(/\D/g, ""));
+        }
+      }
+    });
+
+    sock.ev.on("contacts.update", (updates) => {
+      for (const c of updates) {
+        const name = c.name || c.notify || "";
+        if (c.id && name) contactNames.set(c.id, name);
+        if (c.id && c.id.endsWith("@lid") && c.phoneNumber) {
+          lidPhones.set(c.id, c.phoneNumber.replace(/\D/g, ""));
+        }
+      }
+    });
+
+    // Helper: best display name for a JID
+    const getDisplayName = (jid, fallbackPushName = "") => {
+      return contactNames.get(jid) || fallbackPushName || null;
+    };
+
+    // ── chats.upsert — sync full chat list (fires on every connect) ───────────
+    sock.ev.on("chats.upsert", async (chats) => {
+      try {
+        const session = await SessionModel.findOne({ sessionId });
+        if (!session) return;
+        const userId = session.userId;
+
+        const ops = chats
+          .map((chat) => {
+            const jid = chat.id;
+            if (!jid || jid === "status@broadcast") return null;
+
+            // Use lidPhones map first so @lid contacts get real phone numbers
+            const rawPhone = lidPhones.get(jid) || rawPhoneFrom(jid);
+            const contactName =
+              chat.name ||
+              getDisplayName(jid) ||
+              (rawPhone && !jid.endsWith("@g.us") ? rawPhone : null) ||
+              null;
+
+            const lastMsgTimestamp = chat.conversationTimestamp
+              ? new Date(Number(chat.conversationTimestamp) * 1000)
+              : null;
+
+            return {
+              updateOne: {
+                filter: { userId, sessionId, chatJid: jid },
+                update: {
+                  $set: {
+                    userId,
+                    sessionId,
+                    chatJid: jid,
+                    phoneNumber: lidPhones.get(jid) || rawPhone || null,
+                    contactName: contactName || null,
+                    ...(lastMsgTimestamp
+                      ? { lastMessageTime: lastMsgTimestamp }
+                      : {}),
+                  },
+                  $setOnInsert: {
+                    unreadCount: chat.unreadCount || 0,
+                    lastMessage: "",
+                  },
+                },
+                upsert: true,
+              },
+            };
+          })
+          .filter(Boolean);
+
+        if (ops.length > 0) {
+          await WaChat.bulkWrite(ops, { ordered: false });
+          console.log(
+            `[${sessionId}] Synced ${ops.length} chats from WhatsApp`,
+          );
+          if (io) {
+            io.to(sessionId).emit("chat:synced", {
+              sessionId,
+              count: ops.length,
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`[${sessionId}] chats.upsert error:`, err.message);
+      }
+    });
+
+    sock.ev.on("chats.update", async (updates) => {
+      try {
+        const session = await SessionModel.findOne({ sessionId });
+        if (!session) return;
+        for (const update of updates) {
+          const jid = update.id;
+          if (!jid || jid === "status@broadcast") return;
+          const setFields = {};
+          if (update.name) setFields.contactName = update.name;
+          if (update.conversationTimestamp) {
+            setFields.lastMessageTime = new Date(
+              Number(update.conversationTimestamp) * 1000,
+            );
+          }
+          if (Object.keys(setFields).length > 0) {
+            await WaChat.updateOne(
+              { userId: session.userId, sessionId, chatJid: jid },
+              { $set: setFields },
+            );
+          }
+        }
+      } catch (err) {
+        console.error(`[${sessionId}] chats.update error:`, err.message);
+      }
+    });
+
+    // ── messages.upsert — new (notify) AND historical (append) messages ────────
+    sock.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
+      // notify = new real-time message, append = history loaded on connect
+      if (type !== "notify" && type !== "append") return;
+      const isHistory = type === "append";
+
+      try {
+        const session = await SessionModel.findOne({ sessionId });
+        if (!session) return;
+        const userId = session.userId;
+
+        for (const msg of msgs) {
+          if (!msg.message) continue;
+          const jid = msg.key.remoteJid;
+          if (!jid || jid === "status@broadcast") continue;
+
+          const isGroup = jid.endsWith("@g.us");
+          const isFromMe = !!msg.key.fromMe;
+          const rawPhone = lidPhones.get(jid) || rawPhoneFrom(jid);
+
+          // Best available name
+          const pushName = msg.pushName || "";
+          const displayName =
+            getDisplayName(jid) ||
+            pushName ||
+            (rawPhone && !jid.endsWith("@g.us") ? rawPhone : null) ||
+            null;
+
+          const msgContent =
+            msg.message?.viewOnceMessage?.message ||
+            msg.message?.viewOnceMessageV2?.message?.viewOnceMessage?.message ||
+            msg.message;
+
+          // NOTE: parentheses around ternary are required — || has higher precedence than ?:
+          // without them, the entire || chain becomes the ternary condition
+          const text =
+            msgContent?.conversation ||
+            msgContent?.extendedTextMessage?.text ||
+            msgContent?.imageMessage?.caption ||
+            msgContent?.videoMessage?.caption ||
+            msgContent?.documentMessage?.caption ||
+            msgContent?.documentMessage?.fileName ||
+            (msgContent?.stickerMessage ? "[sticker]" : "") ||
+            "";
+
+          const mediaType = msgContent?.imageMessage
+            ? "image"
+            : msgContent?.videoMessage
+              ? "video"
+              : msgContent?.documentMessage
+                ? "document"
+                : msgContent?.audioMessage
+                  ? "audio"
+                  : msgContent?.stickerMessage
+                    ? "sticker"
+                    : null;
+
+          const timestamp = msg.messageTimestamp
+            ? new Date(Number(msg.messageTimestamp) * 1000)
+            : new Date();
+
+          const messageId = msg.key.id || `${Date.now()}-${Math.random()}`;
+
+          // Upsert message (skip duplicates)
+          try {
+            await WaChatMessage.findOneAndUpdate(
+              { messageId, sessionId },
+              {
+                userId,
+                sessionId,
+                chatJid: jid,
+                messageId,
+                text: text || "",
+                direction: isFromMe ? "out" : "in",
+                status: isFromMe ? "sent" : "read",
+                mediaType,
+                timestamp,
+              },
+              { upsert: true, new: true },
+            );
+          } catch (dupErr) {
+            /* duplicate, skip */
+          }
+
+          // Update WaChat conversation metadata
+          try {
+            await WaChat.findOneAndUpdate(
+              { userId, sessionId, chatJid: jid },
+              {
+                $set: {
+                  userId,
+                  sessionId,
+                  chatJid: jid,
+                  phoneNumber: rawPhone,
+                  contactName: displayName,
+                  lastMessage: text || (mediaType ? `[${mediaType}]` : ""),
+                  lastMessageTime: timestamp,
+                },
+                $inc: { unreadCount: !isFromMe && !isHistory ? 1 : 0 },
+              },
+              { upsert: true, new: true },
+            );
+          } catch (chatErr) {
+            console.error(
+              `[${sessionId}] WaChat update error:`,
+              chatErr.message,
+            );
+          }
+
+          // Emit real-time event only for live messages (not history)
+          if (!isHistory && io) {
+            io.to(sessionId).emit("chat:message", {
+              sessionId,
+              chatJid: jid,
+              phoneNumber: rawPhone,
+              contactName: displayName,
+              text,
+              direction: isFromMe ? "out" : "in",
+              mediaType,
+              timestamp,
+              messageId,
+            });
+          }
+
+          // AI auto-reply — only for live, incoming, non-group text messages
+          if (!isHistory && !isFromMe && !isGroup) {
+            const realText = text && text !== "[sticker]" ? text : null;
+            if (realText) {
+              console.log(
+                `[${sessionId}] 📨 Incoming message from ${jid}: "${realText.slice(0, 60)}" — checking AI agent`,
+              );
+              const sock = this.sockets.get(sessionId);
+              handleIncomingMessage(
+                sessionId,
+                jid,
+                realText,
+                async (recipientJid, replyText) => {
+                  if (!sock) {
+                    console.error(
+                      `[${sessionId}] AI send failed: socket not found`,
+                    );
+                    return;
+                  }
+                  try {
+                    await sock.sendMessage(recipientJid, { text: replyText });
+                    console.log(
+                      `[${sessionId}] 📤 AI reply sent to ${recipientJid}`,
+                    );
+                  } catch (sendErr) {
+                    console.error(
+                      `[${sessionId}] AI send error:`,
+                      sendErr.message,
+                    );
+                  }
+                },
+              );
+
+              // Execute flows for incoming message
+              const flowRecipient = rawPhone || jid;
+              if (flowRecipient) {
+                executeFlowOnMessage(
+                  sessionId,
+                  flowRecipient,
+                  realText,
+                  userId,
+                ).catch((err) => {
+                  console.error(
+                    `[${sessionId}] Flow execution error:`,
+                    err.message,
+                  );
+                });
+              }
+            }
+          }
+        }
+
+        // After bulk history append, notify frontend to refresh chat list
+        if (isHistory && msgs.length > 0 && io) {
+          io.to(sessionId).emit("chat:synced", { sessionId });
+        }
+      } catch (err) {
+        console.error(`[${sessionId}] messages.upsert error:`, err.message);
+      }
+    });
+
+    // ── messaging-history.set — fires on every connect with FULL history ─────
+    // This is the most reliable way to get all chats because it fires even on
+    // sessions that were already connected before the chats.upsert handler existed.
+    sock.ev.on(
+      "messaging-history.set",
+      async ({
+        chats: histChats = [],
+        contacts: histContacts = [],
+        messages: histMsgs = [],
+      }) => {
+        try {
+          const session = await SessionModel.findOne({ sessionId });
+          if (!session) return;
+          const userId = session.userId;
+
+          // Update contact name map from history contacts
+          for (const c of histContacts) {
+            const name = c.name || c.notify || c.verifiedName || "";
+            if (c.id && name) contactNames.set(c.id, name);
+            if (c.id && c.id.endsWith("@lid") && c.phoneNumber) {
+              lidPhones.set(c.id, c.phoneNumber.replace(/\D/g, ""));
+            }
+          }
+
+          // Bulk-upsert all chats from history
+          if (histChats.length > 0) {
+            const ops = histChats
+              .map((chat) => {
+                const jid = chat.id;
+                if (!jid || jid === "status@broadcast") return null;
+                const rawPhone = lidPhones.get(jid) || rawPhoneFrom(jid);
+                const name = chat.name || contactNames.get(jid) || null;
+                const lastTs = chat.conversationTimestamp
+                  ? new Date(Number(chat.conversationTimestamp) * 1000)
+                  : null;
+                return {
+                  updateOne: {
+                    filter: { userId, sessionId, chatJid: jid },
+                    update: {
+                      $set: {
+                        userId,
+                        sessionId,
+                        chatJid: jid,
+                        phoneNumber: rawPhone || null,
+                        contactName: name || null,
+                        ...(lastTs ? { lastMessageTime: lastTs } : {}),
+                      },
+                      $setOnInsert: {
+                        unreadCount: chat.unreadCount || 0,
+                        lastMessage: "",
+                      },
+                    },
+                    upsert: true,
+                  },
+                };
+              })
+              .filter(Boolean);
+
+            if (ops.length > 0) {
+              await WaChat.bulkWrite(ops, { ordered: false });
+              console.log(
+                `[${sessionId}] messaging-history.set: saved ${ops.length} chats`,
+              );
+            }
+          }
+
+          // Save recent messages from history
+          for (const msg of histMsgs) {
+            if (!msg.message) continue;
+            const jid = msg.key?.remoteJid;
+            if (!jid || jid === "status@broadcast") continue;
+            const isFromMe = !!msg.key.fromMe;
+            const rawPhone = lidPhones.get(jid) || rawPhoneFrom(jid);
+            const msgContent =
+              msg.message?.viewOnceMessage?.message || msg.message;
+            const text =
+              msgContent?.conversation ||
+              msgContent?.extendedTextMessage?.text ||
+              msgContent?.imageMessage?.caption ||
+              msgContent?.videoMessage?.caption ||
+              msgContent?.documentMessage?.caption ||
+              "";
+            const mediaType = msgContent?.imageMessage
+              ? "image"
+              : msgContent?.videoMessage
+                ? "video"
+                : msgContent?.documentMessage
+                  ? "document"
+                  : msgContent?.audioMessage
+                    ? "audio"
+                    : null;
+            const timestamp = msg.messageTimestamp
+              ? new Date(Number(msg.messageTimestamp) * 1000)
+              : new Date();
+            const messageId = msg.key.id;
+            if (!messageId) continue;
+
+            try {
+              await WaChatMessage.findOneAndUpdate(
+                { messageId, sessionId },
+                {
+                  userId,
+                  sessionId,
+                  chatJid: jid,
+                  messageId,
+                  text: text || "",
+                  direction: isFromMe ? "out" : "in",
+                  status: "read",
+                  mediaType,
+                  timestamp,
+                },
+                { upsert: true, new: true },
+              );
+              // Update last message on WaChat if this is newer
+              if (text || mediaType) {
+                await WaChat.updateOne(
+                  {
+                    userId,
+                    sessionId,
+                    chatJid: jid,
+                    $or: [
+                      { lastMessageTime: { $lt: timestamp } },
+                      { lastMessageTime: null },
+                    ],
+                  },
+                  {
+                    $set: {
+                      lastMessage: text || `[${mediaType}]`,
+                      lastMessageTime: timestamp,
+                      phoneNumber: rawPhone,
+                    },
+                  },
+                );
+              }
+            } catch (_) {
+              /* duplicate */
+            }
+          }
+
+          // Notify frontend that sync is complete
+          if (io) {
+            io.to(sessionId).emit("chat:synced", {
+              sessionId,
+              count: histChats.length,
+            });
+          }
+          console.log(
+            `[${sessionId}] History sync complete — ${histChats.length} chats, ${histMsgs.length} messages`,
+          );
+        } catch (err) {
+          console.error(
+            `[${sessionId}] messaging-history.set error:`,
+            err.message,
+          );
+        }
+      },
+    );
+
     // Listen for message updates (delivery, read status)
     sock.ev.on("messages.update", async (updates) => {
       for (const { key, update } of updates) {
         try {
-          const phoneNumber = key.remoteJid.split("@")[0];
+          const remoteJid = key?.remoteJid || "";
+          const participantJid = key?.participant || "";
+          const phoneNumber =
+            remoteJid.split("@")[0] || participantJid.split("@")[0] || "";
+          if (!phoneNumber) continue;
           const messageStatus = update.status;
 
           let status = "pending";
@@ -238,7 +724,7 @@ class WhatsAppService {
                 status,
                 ...updateData,
               },
-              { sort: { sentAt: -1 } } // Update most recent message first
+              { sort: { sentAt: -1 } }, // Update most recent message first
             );
 
             // Emit status update through Socket.IO
@@ -251,7 +737,9 @@ class WhatsAppService {
               });
             }
 
-            console.log(`[${sessionId}] Message status updated: ${phoneNumber} -> ${status}`);
+            console.log(
+              `[${sessionId}] Message status updated: ${phoneNumber} -> ${status}`,
+            );
           }
         } catch (err) {
           console.error("Error updating message status:", err.message);
@@ -262,7 +750,8 @@ class WhatsAppService {
     return sock;
   }
 
-  async createSession(userId, name) {
+  async createSession(userId, name, options = {}) {
+    const { enableChatView = false, chatPasscode = "" } = options;
     const sessionId = `wa_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Save to DB first
@@ -272,6 +761,11 @@ class WhatsAppService {
       sessionId,
       status: "connecting",
       credentials: {},
+      chatViewEnabled: !!enableChatView,
+      chatPasscodeHash:
+        enableChatView && String(chatPasscode).length >= 4
+          ? await bcrypt.hash(String(chatPasscode), 10)
+          : null,
     });
 
     await sessionDb.save();
@@ -297,6 +791,7 @@ class WhatsAppService {
       sessionId,
       name,
       status: "connecting",
+      chatViewEnabled: !!enableChatView,
     };
   }
 
@@ -369,6 +864,25 @@ class WhatsAppService {
     return this.sockets.get(sessionId);
   }
 
+  // Returns the live socket for a session (for chat history fetch)
+  getSocket(sessionId) {
+    return this.sockets.get(sessionId) || null;
+  }
+
+  // Fetch recent message history for a specific chat JID via Baileys
+  async loadChatHistory(sessionId, jid, count = 50) {
+    const sock = this.sockets.get(sessionId);
+    if (!sock) throw new Error("Session not connected");
+    try {
+      // loadMessages is available in @whiskeysockets/baileys and returns from internal store
+      const result = await sock.loadMessages(jid, count);
+      return result?.messages || [];
+    } catch (err) {
+      console.warn(`[${sessionId}] loadChatHistory for ${jid}:`, err.message);
+      return [];
+    }
+  }
+
   async waitForSocketOpen(sock, timeoutMs = 15000) {
     if (sock?.user?.id) {
       return;
@@ -406,6 +920,10 @@ class WhatsAppService {
     mediaPath = null,
     mediaType = null,
   ) {
+    if (!phoneNumber) {
+      throw new Error("Recipient phone number/JID is required");
+    }
+
     let sock = this.sockets.get(sessionId);
     if (!sock) {
       console.log(
@@ -421,12 +939,18 @@ class WhatsAppService {
 
     await this.waitForSocketOpen(sock);
 
-    let jid = phoneNumber.replace(/\D/g, "");
-    if (jid.length === 10) {
-      jid = "91" + jid;
-    }
-    if (!jid.includes("@s.whatsapp.net")) {
+    // If a full JID was passed (contains @), use it directly — handles @s.whatsapp.net, @g.us, @lid
+    let jid;
+    if (String(phoneNumber).includes("@")) {
+      jid = phoneNumber;
+    } else {
+      jid = String(phoneNumber).replace(/\D/g, "");
+      if (jid.length === 10) jid = "91" + jid;
       jid = jid + "@s.whatsapp.net";
+    }
+
+    if (jid === "@s.whatsapp.net") {
+      throw new Error("Invalid recipient JID");
     }
 
     // If media is provided, send media with optional caption

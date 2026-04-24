@@ -34,6 +34,12 @@ const campaignSchema = new mongoose.Schema({
     ref: "WhatsAppSession",
     required: true,
   },
+  // Multi-session auto-switch
+  sessions: [{ type: mongoose.Schema.Types.ObjectId, ref: "WhatsAppSession" }],
+  multiSession: {
+    enabled: { type: Boolean, default: false },
+    mode: { type: String, enum: ["split", "round-robin"], default: "split" },
+  },
   mode: {
     type: String,
     enum: ["instant", "scheduled", "interval", "delayed"],
@@ -121,22 +127,33 @@ const campaignSchema = new mongoose.Schema({
         type: Number,
         default: 0,
       },
+      sentBy: { type: mongoose.Schema.Types.ObjectId }, // which session sent this
     },
   ],
-  mediaUrl: {
-    type: String, // e.g. /uploads/filename.jpg (gallery) or full data URL (upload)
-  },
-  mediaType: {
-    type: String,
-    enum: ["image", "video", "audio", "pdf", "document"],
-  },
-  mediaName: {
-    type: String,
-  },
+  // Legacy single-media fields (kept for backward compatibility)
+  mediaUrl: { type: String },
+  mediaType: { type: String, enum: ["image", "video", "audio", "pdf", "document"] },
+  mediaName: { type: String },
+  // Multi-media support
+  mediaFiles: [
+    {
+      url:  { type: String, required: true },
+      type: { type: String, enum: ["image", "video", "audio", "pdf", "document"], default: "image" },
+      name: { type: String, default: "file" },
+    },
+  ],
   currentIndex: {
     type: Number,
     default: 0,
   },
+  // Repeat / recurrence schedule
+  repeat: {
+    enabled: { type: Boolean, default: false },
+    type: { type: String, enum: ["daily", "weekly", "monthly"], default: "daily" },
+    time: { type: String, default: "09:00" }, // HH:mm
+    days: [{ type: Number }], // weekly: 0-6 (Sun-Sat), monthly: 1-31
+  },
+  nextRunAt: { type: Date },
   pausedAt: Date,
   resumedAt: Date,
   completedAt: Date,
