@@ -70,6 +70,36 @@ router.post("/create-order", authMiddleware, async (req, res) => {
       });
     }
 
+    // Check if Razorpay is configured; fall back to demo mode if not
+    const settings = await SubscriptionSettings.findOne({ key: "global" }).lean();
+    const hasKeys =
+      (settings?.razorpayKeyId || "").trim().length > 0 &&
+      (settings?.razorpayKeySecret || "").trim().length > 0;
+
+    if (!hasKeys) {
+      if (!settings?.demoEnabled) {
+        return res.status(400).json({
+          success: false,
+          error: "Payment gateway not configured. Please contact the administrator.",
+        });
+      }
+      // Demo mode — simulate a payment order
+      return res.json({
+        success: true,
+        demo: true,
+        demoOrderId: `demo_${String(req.user._id).slice(-8)}_${Date.now()}`,
+        plan: {
+          _id: plan._id,
+          name: plan.name,
+          priceMonthly: plan.priceMonthly,
+          priceYearly: plan.priceYearly,
+        },
+        amount: Math.round(amount * 100),
+        currency: plan.currency || "INR",
+        billingCycle,
+      });
+    }
+
     // Paid plan — create Razorpay order
     const { keyId, keySecret } = await getRazorpayConfig();
 
@@ -129,7 +159,38 @@ router.post("/verify", authMiddleware, async (req, res) => {
       billingCycle = "monthly",
     } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !planId) {
+    if (!razorpay_order_id || !planId) {
+      return res.status(400).json({ success: false, error: "Missing payment verification fields" });
+    }
+
+    // Demo payment — skip signature verification
+    if (String(razorpay_order_id).startsWith("demo_")) {
+      const settings = await SubscriptionSettings.findOne({ key: "global" }).lean();
+      if (!settings?.demoEnabled) {
+        return res.status(400).json({ success: false, error: "Demo mode is not enabled" });
+      }
+      const demoPlan = await SubscriptionPlan.findById(planId);
+      if (!demoPlan) return res.status(404).json({ success: false, error: "Plan not found" });
+      const demoDuration = billingCycle === "yearly" ? 365 : demoPlan.durationDays;
+      const demoSub = await SubscriptionService.assignPlanToUser(req.user._id, planId, {
+        durationDays: demoDuration,
+      });
+      console.log(`✅ Demo payment — user ${req.user._id} upgraded to ${demoPlan.name}`);
+      return res.json({
+        success: true,
+        message: `Successfully upgraded to ${demoPlan.name} (Demo)`,
+        data: {
+          subscription: {
+            status: demoSub.status,
+            startedAt: demoSub.startedAt,
+            expiresAt: demoSub.expiresAt,
+          },
+          plan: SubscriptionService.toClientPlan(demoSub.planId),
+        },
+      });
+    }
+
+    if (!razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ success: false, error: "Missing payment verification fields" });
     }
 
