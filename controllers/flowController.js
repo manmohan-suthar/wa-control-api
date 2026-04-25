@@ -130,7 +130,7 @@ export const updateFlow = async (req, res) => {
   try {
     const { flowId } = req.params;
     const userId = req.user._id;
-    const { name, description, status } = req.body;
+    const { name, description, status, sessionId: newSessionId } = req.body;
     const nodes =
       req.body.nodes !== undefined
         ? normalizeGraphValue(req.body.nodes)
@@ -156,6 +156,22 @@ export const updateFlow = async (req, res) => {
     if (status) flow.status = status;
     if (nodes) flow.nodes = nodes;
     if (edges) flow.edges = edges;
+
+    if (newSessionId) {
+      let session;
+      try {
+        session = await WhatsAppSession.findOne({
+          _id: new mongoose.Types.ObjectId(newSessionId),
+          userId,
+        });
+      } catch {
+        session = await WhatsAppSession.findOne({ sessionId: newSessionId, userId });
+      }
+      if (!session) {
+        return res.status(404).json({ success: false, message: "WhatsApp session not found" });
+      }
+      flow.sessionId = session._id;
+    }
 
     await flow.save();
     await flow.populate("sessionId", "name phoneNumber status");

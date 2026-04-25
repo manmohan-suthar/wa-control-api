@@ -144,6 +144,34 @@ router.post("/agents", async (req, res) => {
   }
 });
 
+// ── Change session linked to agent ─────────────────────────────────────────
+router.patch("/agents/:id/session", async (req, res) => {
+  try {
+    const { newSessionId } = req.body;
+    if (!newSessionId) return res.status(400).json({ success: false, error: "newSessionId required" });
+
+    const session = await WhatsAppSession.findOne({ sessionId: newSessionId, userId: req.user._id });
+    if (!session) return res.status(404).json({ success: false, error: "Session not found" });
+
+    // Prevent linking to a session that already has a different agent
+    const conflict = await AiAgent.findOne({ userId: req.user._id, sessionId: newSessionId });
+    if (conflict && conflict._id.toString() !== req.params.id) {
+      return res.status(409).json({ success: false, error: "Another agent is already assigned to that session" });
+    }
+
+    const agent = await AiAgent.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      { $set: { sessionId: newSessionId } },
+      { new: true },
+    );
+    if (!agent) return res.status(404).json({ success: false, error: "Agent not found" });
+
+    res.json({ success: true, data: agent });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Toggle active ──────────────────────────────────────────────────────────
 router.patch("/agents/:id/toggle", async (req, res) => {
   try {
