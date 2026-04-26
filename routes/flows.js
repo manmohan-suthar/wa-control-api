@@ -12,6 +12,7 @@ import {
   testFlowTrigger,
   getFlowExecutionHistory,
   proxyFlowApiRequest,
+  simulateGoogleSheetsNode,
 } from "../controllers/flowExecutionController.js";
 
 const router = express.Router();
@@ -27,6 +28,9 @@ router.get("/sessions/list", getSessions);
 
 // Proxy API request from flow builder (CORS-safe testing)
 router.post("/proxy-request", proxyFlowApiRequest);
+
+// Execute a Google Sheets node in simulation (uses the authenticated user's saved token)
+router.post("/simulate-googlesheets", simulateGoogleSheetsNode);
 
 // Get single flow
 router.get("/:flowId", getFlow);

@@ -4,6 +4,8 @@ import authMiddleware from "../middleware/auth.js";
 import User from "../models/User.js";
 import Notification from "../models/Notification.js";
 import MediaSettings from "../models/MediaSettings.js";
+import GoogleOAuthSettings from "../models/GoogleOAuthSettings.js";
+import UserGoogleConnection from "../models/UserGoogleConnection.js";
 
 const router = express.Router();
 
@@ -21,6 +23,78 @@ router.get("/media-limits", authMiddleware, async (req, res) => {
         document: settings.document?.maxSizeMB ?? 25,
       },
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Google OAuth Client ID (safe for all authenticated users) ────────────────
+router.get("/google-client-id", authMiddleware, async (req, res) => {
+  try {
+    const settings = await GoogleOAuthSettings.findOne({ key: "global" }).lean();
+    const clientId = settings?.clientId || "";
+    const enabled = settings?.enabled !== false;
+    res.json({ success: true, data: { clientId, enabled } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── User Google Connection (persist OAuth token per user) ─────────────────────
+
+router.get("/google-connection", authMiddleware, async (req, res) => {
+  try {
+    const conn = await UserGoogleConnection.findOne({ userId: req.user._id })
+      .select("+accessToken")
+      .lean();
+
+    if (!conn || !conn.accessToken) {
+      return res.json({ success: true, data: { connected: false } });
+    }
+
+    const isExpired = conn.expiresAt && new Date(conn.expiresAt) <= new Date();
+    res.json({
+      success: true,
+      data: {
+        connected: true,
+        accessToken: conn.accessToken,
+        expiresAt: conn.expiresAt,
+        expired: isExpired,
+        email: conn.email,
+        name: conn.name,
+        picture: conn.picture,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post("/google-connection", authMiddleware, async (req, res) => {
+  try {
+    const { accessToken, expiresIn, email, name, picture } = req.body || {};
+    if (!accessToken) {
+      return res.status(400).json({ success: false, error: "accessToken required" });
+    }
+
+    const expiresAt = new Date(Date.now() + (Number(expiresIn) || 3600) * 1000);
+
+    await UserGoogleConnection.findOneAndUpdate(
+      { userId: req.user._id },
+      { $set: { accessToken, expiresAt, email: email || "", name: name || "", picture: picture || "" } },
+      { upsert: true, new: true },
+    );
+
+    res.json({ success: true, message: "Google connection saved" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete("/google-connection", authMiddleware, async (req, res) => {
+  try {
+    await UserGoogleConnection.deleteOne({ userId: req.user._id });
+    res.json({ success: true, message: "Google connection removed" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

@@ -171,4 +171,51 @@ export const getMe = async (req, res) => {
   }
 };
 
-export default { register, login, googleLogin, getMe };
+export const updatePassword = async (req, res) => {
+  try {
+    const { idToken, newPassword } = req.body;
+    if (!idToken || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "idToken and newPassword are required" });
+    }
+    if (newPassword.length < 6) {
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 6 characters" });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(idToken);
+    } catch {
+      return res.status(401).json({ error: "Invalid Firebase token" });
+    }
+
+    const user = await User.findOne({
+      $or: [
+        { firebaseUid: decoded.uid },
+        { email: (decoded.email || "").toLowerCase() },
+      ],
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (user.authProvider !== "local") {
+      return res
+        .status(400)
+        .json({ error: "Password reset is only available for local accounts" });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.json({ message: "Password updated successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export default { register, login, googleLogin, getMe, updatePassword };

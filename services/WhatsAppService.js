@@ -31,6 +31,7 @@ class WhatsAppService {
     this.io = null;
     this.pendingQRCodes = new Map(); // sessionId -> latest QR data URL (race condition fix)
     this.reconnectAttempts = new Map();
+    this.pendingReconnects = new Set(); // guard against concurrent reconnect calls for same session
 
     if (!existsSync(SESSIONS_DIR)) {
       mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -192,17 +193,34 @@ class WhatsAppService {
           setTimeout(() => {
             this.reconnectSession(sessionId).catch(console.error);
           }, 1500);
-        } else {
-          SessionModel.updateOne(
-            { sessionId },
-            { status: "disconnected" },
-          ).catch(console.error);
+        } else if (!shouldReconnect) {
+          // Genuine WhatsApp logout — user scanned "Log out" on phone
+          console.log(`[${sessionId}] Logged out from WhatsApp, marking disconnected`);
+          SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
+          if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
 
-          if (io) {
-            io.to(sessionId).emit("status", {
-              sessionId,
-              status: "disconnected",
-            });
+        } else {
+          // Unexpected close (pre-auth retries exhausted or unknown reason).
+          // If creds.json still exists the phone is likely still authenticated —
+          // schedule one recovery reconnect with a longer delay before giving up.
+          const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
+          if (existsSync(credsPath)) {
+            console.log(`[${sessionId}] Unexpected close but creds exist — recovery reconnect in 15 s`);
+            this.reconnectAttempts.delete(sessionId); // reset counter for next attempt
+            SessionModel.updateOne({ sessionId }, { status: "connecting" }).catch(console.error);
+            if (io) io.to(sessionId).emit("status", { sessionId, status: "connecting" });
+            setTimeout(() => {
+              if (!this.sockets.has(sessionId)) {
+                this.reconnectSession(sessionId).catch((err) => {
+                  console.error(`[${sessionId}] Recovery reconnect failed:`, err.message);
+                  SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
+                  if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
+                });
+              }
+            }, 15_000);
+          } else {
+            SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
+            if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
           }
         }
       }
@@ -796,39 +814,46 @@ class WhatsAppService {
   }
 
   async reconnectSession(sessionId) {
-    // Find session in DB
-    const session = await SessionModel.findOne({ sessionId });
-    if (!session) {
-      console.log(`[${sessionId}] Session not found for reconnect`);
+    // Guard: skip if a reconnect is already in progress for this session
+    if (this.pendingReconnects.has(sessionId)) {
+      console.log(`[${sessionId}] Reconnect already in progress, skipping`);
       return;
     }
+    this.pendingReconnects.add(sessionId);
 
-    if (this.sockets.has(sessionId)) {
-      try {
-        this.sockets
-          .get(sessionId)
-          .end({ error: null, reason: "Reconnecting" });
-      } catch (e) {}
-      this.sockets.delete(sessionId);
+    try {
+      const session = await SessionModel.findOne({ sessionId });
+      if (!session) {
+        console.log(`[${sessionId}] Session not found for reconnect`);
+        return;
+      }
+
+      if (this.sockets.has(sessionId)) {
+        try {
+          this.sockets.get(sessionId).end({ error: null, reason: "Reconnecting" });
+        } catch (e) {}
+        this.sockets.delete(sessionId);
+      }
+
+      const sessionPath = join(SESSIONS_DIR, sessionId);
+      const authState = await useMultiFileAuthState(sessionPath);
+      const sock = await this.createSocket(sessionId, authState);
+      this.sockets.set(sessionId, sock);
+
+      await SessionModel.updateOne({ sessionId }, { status: "connecting" });
+
+      return { sessionId, status: "connecting" };
+    } finally {
+      this.pendingReconnects.delete(sessionId);
     }
-
-    const sessionPath = join(SESSIONS_DIR, sessionId);
-
-    // Get auth state
-    const authState = await useMultiFileAuthState(sessionPath);
-
-    const sock = await this.createSocket(sessionId, authState);
-    this.sockets.set(sessionId, sock);
-
-    await SessionModel.updateOne({ sessionId }, { status: "connecting" });
-
-    return { sessionId, status: "connecting" };
   }
 
   async restoreSessions() {
     try {
+      // Include "disconnected" sessions too — they may have been incorrectly marked
+      // as disconnected (network glitch, server crash) but still have valid creds on disk.
       const sessions = await SessionModel.find({
-        status: { $in: ["connecting", "connected"] },
+        status: { $in: ["connecting", "connected", "disconnected"] },
       });
 
       for (const session of sessions) {
@@ -837,20 +862,28 @@ class WhatsAppService {
           const credsPath = join(sessionPath, "creds.json");
 
           if (!existsSync(credsPath)) {
-            console.log(
-              `Skipping restore for ${session.sessionId}: creds.json missing`,
-            );
-            await SessionModel.updateOne(
-              { sessionId: session.sessionId },
-              { status: "disconnected" },
-            );
+            if (session.status !== "disconnected") {
+              console.log(`Skipping restore for ${session.sessionId}: creds.json missing`);
+              await SessionModel.updateOne(
+                { sessionId: session.sessionId },
+                { status: "disconnected" },
+              );
+            }
             continue;
           }
 
-          console.log(`Restoring session: ${session.sessionId}`);
+          // Skip if socket already exists in map (shouldn't happen at startup)
+          if (this.sockets.has(session.sessionId)) continue;
+
+          console.log(`Restoring session: ${session.sessionId} (prev status: ${session.status})`);
           const authState = await useMultiFileAuthState(sessionPath);
           const sock = await this.createSocket(session.sessionId, authState);
           this.sockets.set(session.sessionId, sock);
+          // Mark as connecting now; event handler will set "connected" when open
+          await SessionModel.updateOne(
+            { sessionId: session.sessionId },
+            { status: "connecting" },
+          );
         } catch (err) {
           console.error(`Failed to restore ${session.sessionId}:`, err.message);
         }
@@ -1054,8 +1087,59 @@ class WhatsAppService {
 
   async getSessionStatus(sessionId) {
     const session = await SessionModel.findOne({ sessionId });
-    if (!session) {
-      return null;
+    if (!session) return null;
+
+    const sock = this.sockets.get(sessionId);
+    const isLiveConnected = !!(sock?.user?.id);
+
+    // 1. Socket is alive but DB is stale → sync DB silently and return "connected"
+    if (isLiveConnected && session.status !== "connected") {
+      const phone = (sock.user.id || "").split("@")[0].split(":")[0];
+      SessionModel.updateOne(
+        { sessionId },
+        { status: "connected", ...(phone ? { phoneNumber: phone } : {}) },
+      ).catch(console.error);
+      return {
+        sessionId: session.sessionId,
+        name: session.name,
+        status: "connected",
+        phoneNumber: phone || session.phoneNumber,
+        lastConnected: session.lastConnected,
+      };
+    }
+
+    // 2. DB says connected/connecting but socket is gone → trigger recovery
+    if (!isLiveConnected && ["connected", "connecting"].includes(session.status)) {
+      const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
+      if (existsSync(credsPath)) {
+        console.log(`[${sessionId}] Socket missing for ${session.status} session — triggering reconnect`);
+        this.reconnectSession(sessionId).catch(console.error);
+        return {
+          sessionId: session.sessionId,
+          name: session.name,
+          status: "connecting",
+          phoneNumber: session.phoneNumber,
+          lastConnected: session.lastConnected,
+        };
+      }
+    }
+
+    // 3. DB says disconnected but creds exist → auto-reconnect (e.g. after server restart
+    //    that skipped the session, or after an incorrect disconnect marking)
+    if (!isLiveConnected && session.status === "disconnected") {
+      const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
+      if (existsSync(credsPath)) {
+        console.log(`[${sessionId}] Disconnected but creds exist — auto-reconnecting`);
+        SessionModel.updateOne({ sessionId }, { status: "connecting" }).catch(console.error);
+        this.reconnectSession(sessionId).catch(console.error);
+        return {
+          sessionId: session.sessionId,
+          name: session.name,
+          status: "connecting",
+          phoneNumber: session.phoneNumber,
+          lastConnected: session.lastConnected,
+        };
+      }
     }
 
     return {

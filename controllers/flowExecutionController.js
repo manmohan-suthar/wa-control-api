@@ -1,6 +1,7 @@
 import Flow from "../models/Flow.js";
 import WhatsAppSession from "../models/WhatsAppSession.js";
 import WhatsAppService from "../services/WhatsAppService.js";
+import UserGoogleConnection from "../models/UserGoogleConnection.js";
 
 // In-memory runtime state for conversations waiting on an Input node reply.
 const pendingInputState = new Map();
@@ -43,6 +44,7 @@ export const executeFlowOnMessage = async (
           resumedContext,
           waitingState.variableKey,
           messageContent,
+          waitingState.splitVariables,
         );
 
         pendingInputState.delete(key);
@@ -58,6 +60,7 @@ export const executeFlowOnMessage = async (
           pendingInputState.set(key, {
             flowId: String(waitingFlow._id),
             variableKey: resumeResult.variableKey,
+            splitVariables: resumeResult.splitVariables || "",
             nextNodeId: resumeResult.nextNodeId,
             context: resumeResult.context,
             updatedAt: Date.now(),
@@ -106,6 +109,7 @@ export const executeFlowOnMessage = async (
         pendingInputState.set(key, {
           flowId: String(flow._id),
           variableKey: result.variableKey,
+          splitVariables: result.splitVariables || "",
           nextNodeId: result.nextNodeId,
           context: result.context,
           updatedAt: Date.now(),
@@ -434,7 +438,7 @@ async function executeFlowSequence(
       }
 
       if (currentNode.type === "input") {
-        const { variableKey } = await executeInputNode(
+        const { variableKey, splitVariables } = await executeInputNode(
           currentNode,
           phoneNumber,
           runtimeSessionId,
@@ -444,6 +448,7 @@ async function executeFlowSequence(
         return {
           status: "waiting",
           variableKey,
+          splitVariables,
           nextNodeId: edgeAfterInput?.target || null,
           context,
         };
@@ -457,6 +462,8 @@ async function executeFlowSequence(
         nextHandle = await executeRouterNode(currentNode, context);
       } else if (currentNode.type === "api") {
         await executeApiNode(currentNode, context);
+      } else if (currentNode.type === "googlesheets") {
+        await executeGoogleSheetsNode(currentNode, flow.userId, context);
       }
 
       const edge = getOutgoingEdge(edges, currentNode.id, nextHandle);
@@ -497,22 +504,57 @@ async function executeInputNode(
 
   const variableKey =
     String(inputNode?.data?.variableKey || "user_input").trim() || "user_input";
+  const splitVariables = String(inputNode?.data?.splitVariables || "").trim();
 
-  return { variableKey };
+  return { variableKey, splitVariables };
 }
 
-function applyInputToContext(context, variableKey, incomingText) {
+function applyInputToContext(
+  context,
+  variableKey,
+  incomingText,
+  splitVariables = "",
+) {
   const key = String(variableKey || "user_input").trim() || "user_input";
   const text = String(incomingText ?? "").trim();
-  const normalized = String(incomingText ?? "")
-    .trim()
-    .toLowerCase();
+  const normalized = text.toLowerCase();
 
   context[key] = normalized;
   context.incoming_message = text;
   context.user_message = text;
   context.user_input = normalized;
   context["user.reply"] = normalized;
+
+  // Split comma-separated input into both numeric and named variables.
+  // Numeric indices ({{key.0}}, {{key.1}}) are always created for backward compat.
+  // Named variables ({{key.name}}, {{key.age}}) are created when splitVariables is set.
+  if (text.includes(",")) {
+    const parts = text
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const namedVars = splitVariables
+      ? splitVariables
+          .split(",")
+          .map((v) =>
+            v
+              .trim()
+              .replace(/[^a-z0-9_]/gi, "_")
+              .toLowerCase(),
+          )
+          .filter(Boolean)
+      : [];
+
+    parts.forEach((part, i) => {
+      context[`${key}.${i}`] = part.toLowerCase();
+      context[`${key}.raw.${i}`] = part;
+      if (namedVars[i]) {
+        context[`${key}.${namedVars[i]}`] = part.toLowerCase();
+        context[`${key}.${namedVars[i]}.raw`] = part;
+      }
+    });
+    context[`${key}.count`] = parts.length;
+  }
 }
 
 async function executeRouterNode(routerNode, context) {
@@ -590,6 +632,302 @@ async function executeApiNode(apiNode, context) {
     });
   } catch (error) {
     console.error("Error in executeApiNode:", error.message);
+  }
+}
+
+// ── Google Sheets Node ────────────────────────────────────────────────────────
+
+async function executeGoogleSheetsNode(sheetsNode, flowUserId, context) {
+  const d = sheetsNode.data || {};
+  const prefix = d.outputPrefix || "sheets";
+
+  // Helper: set failure state and return
+  const fail = (msg) => {
+    context[`${prefix}.success`] = false;
+    context[`${prefix}.error`] = msg;
+    console.warn(`[GoogleSheets] ${msg}`);
+  };
+
+  try {
+    // 1. Get flow-owner's saved Google OAuth token
+    const conn = await UserGoogleConnection.findOne({ userId: flowUserId })
+      .select("+accessToken")
+      .lean();
+
+    if (!conn?.accessToken) {
+      return fail(
+        "Google Sheets not connected. Open the flow in builder and connect.",
+      );
+    }
+
+    const now = new Date();
+    if (conn.expiresAt && new Date(conn.expiresAt) < now) {
+      return fail(
+        "Google OAuth token has expired. Re-connect in the Flow Builder.",
+      );
+    }
+
+    const token = conn.accessToken;
+    const spreadsheetId = d.spreadsheetId;
+    const sheetName = d.sheetName || "Sheet1";
+    const action = d.action || "read";
+
+    if (!spreadsheetId)
+      return fail("No spreadsheet configured in Google Sheets node.");
+
+    const BASE = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
+
+    // Sheets API fetch helper
+    async function gFetch(url, method = "GET", body = null) {
+      const opts = {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // Column letter → 0-based index  (A→0, B→1 …)
+    function ci(col) {
+      return (
+        String(col || "A")
+          .toUpperCase()
+          .trim()
+          .charCodeAt(0) - 65
+      );
+    }
+
+    // Read all values from a range
+    async function readRows(range) {
+      const data = await gFetch(
+        `${BASE}/values/${encodeURIComponent(sheetName + "!" + range)}`,
+      );
+      return data.values || [];
+    }
+
+    // ── READ ──────────────────────────────────────────────────────────────────
+    if (action === "read") {
+      const range = d.readRange || "A:Z";
+      const filterCol = resolveTemplate(d.readFilterColumn || "", context)
+        .toUpperCase()
+        .trim();
+      const filterVal = resolveTemplate(d.readFilterValue || "", context)
+        .toLowerCase()
+        .trim();
+      const rawRowNum = resolveTemplate(d.readRowNumber || "", context).trim();
+      const limit =
+        d.readLimit === "all" ? Infinity : parseInt(d.readLimit || "1") || 1;
+      const headerDefs = (d.readHeaders || "")
+        .split(",")
+        .map((h) => h.trim())
+        .filter(Boolean);
+
+      const rows = await readRows(range);
+
+      let matched;
+      // readRowNumber (1-based) overrides filter when set
+      if (rawRowNum) {
+        const rowIdx = parseInt(rawRowNum, 10) - 1;
+        matched =
+          !isNaN(rowIdx) && rowIdx >= 0 && rowIdx < rows.length
+            ? [rows[rowIdx]]
+            : [];
+      } else if (filterCol && filterVal !== "") {
+        const colIndex = ci(filterCol);
+        matched = rows.filter(
+          (row) =>
+            String(row[colIndex] ?? "")
+              .toLowerCase()
+              .trim() === filterVal,
+        );
+      } else {
+        matched = rows;
+      }
+
+      const limited = limit === Infinity ? matched : matched.slice(0, limit);
+
+      context[`${prefix}.found`] = limited.length > 0;
+      context[`${prefix}.count`] = limited.length;
+      context[`${prefix}.success`] = true;
+
+      if (limited.length === 0) return;
+
+      // Map first matching row into shorthand context variables ({{prefix.A}} etc.)
+      const first = limited[0];
+      if (headerDefs.length) {
+        headerDefs.forEach((h, i) => {
+          context[`${prefix}.${h.replace(/\s+/g, "_").toLowerCase()}`] =
+            first[i] ?? "";
+        });
+      } else {
+        first.forEach((val, i) => {
+          context[`${prefix}.${String.fromCharCode(65 + i)}`] = val ?? "";
+        });
+      }
+      context[`${prefix}.row`] = first.join(", ");
+
+      // Always store ALL matched rows as 0-based indexed vars:
+      // {{prefix.0.A}}, {{prefix.0.row}}, {{prefix.1.A}}, {{prefix.1.row}}, etc.
+      limited.forEach((row, ri) => {
+        if (headerDefs.length) {
+          headerDefs.forEach((h, i) => {
+            context[
+              `${prefix}.${ri}.${h.replace(/\s+/g, "_").toLowerCase()}`
+            ] = row[i] ?? "";
+          });
+        } else {
+          row.forEach((val, i) => {
+            context[`${prefix}.${ri}.${String.fromCharCode(65 + i)}`] =
+              val ?? "";
+          });
+        }
+        context[`${prefix}.${ri}.row`] = row.join(", ");
+      });
+
+      // ── APPEND ────────────────────────────────────────────────────────────────
+    } else if (action === "append") {
+      const cols = (d.appendColumns || []).filter((c) => c.column);
+      if (cols.length === 0) return fail("No columns configured for Append.");
+
+      // Build sparse column map, then fill to an array
+      const colMap = {};
+      cols.forEach(({ column, value }) => {
+        colMap[ci(column)] = resolveTemplate(value ?? "", context);
+      });
+      const maxIdx = Math.max(...Object.keys(colMap).map(Number));
+      const row = Array.from({ length: maxIdx + 1 }, (_, i) => colMap[i] ?? "");
+
+      const lastCol = String.fromCharCode(65 + maxIdx);
+      const url =
+        `${BASE}/values/${encodeURIComponent(sheetName + "!A:" + lastCol)}` +
+        `:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+      const result = await gFetch(url, "POST", { values: [row] });
+
+      context[`${prefix}.success`] = true;
+      context[`${prefix}.updatedRange`] = result.updates?.updatedRange ?? "";
+      context[`${prefix}.affectedRows`] = result.updates?.updatedRows ?? 1;
+
+      // ── UPDATE ────────────────────────────────────────────────────────────────
+    } else if (action === "update") {
+      const filterCol = resolveTemplate(d.updateFilterColumn || "A", context)
+        .toUpperCase()
+        .trim();
+      const filterVal = resolveTemplate(d.updateFilterValue || "", context)
+        .toLowerCase()
+        .trim();
+      const updateCols = (d.updateColumns || []).filter((c) => c.column);
+
+      if (!filterVal) return fail("Update filter value is empty.");
+      if (updateCols.length === 0)
+        return fail("No columns configured for Update.");
+
+      const rows = await readRows("A:Z");
+      const colIndex = ci(filterCol);
+      const matchedRows = rows
+        .map((row, i) =>
+          String(row[colIndex] ?? "")
+            .toLowerCase()
+            .trim() === filterVal
+            ? i
+            : -1,
+        )
+        .filter((i) => i >= 0);
+
+      if (matchedRows.length === 0) {
+        context[`${prefix}.success`] = true;
+        context[`${prefix}.affectedRows`] = 0;
+        return;
+      }
+
+      // Build batchUpdate data array (one range per cell to update)
+      const batchData = [];
+      for (const rowIdx of matchedRows) {
+        for (const { column, value } of updateCols) {
+          if (!column) continue;
+          batchData.push({
+            range: `${sheetName}!${column.toUpperCase()}${rowIdx + 1}`,
+            values: [[resolveTemplate(value ?? "", context)]],
+          });
+        }
+      }
+
+      const result = await gFetch(`${BASE}/values:batchUpdate`, "POST", {
+        valueInputOption: "USER_ENTERED",
+        data: batchData,
+      });
+
+      context[`${prefix}.success`] = true;
+      context[`${prefix}.affectedRows`] = matchedRows.length;
+      context[`${prefix}.updatedRange`] = (result.responses || [])
+        .map((r) => r.updatedRange)
+        .join(", ");
+
+      // ── DELETE ────────────────────────────────────────────────────────────────
+    } else if (action === "delete") {
+      const filterCol = resolveTemplate(d.deleteFilterColumn || "A", context)
+        .toUpperCase()
+        .trim();
+      const filterVal = resolveTemplate(d.deleteFilterValue || "", context)
+        .toLowerCase()
+        .trim();
+
+      if (!filterVal) return fail("Delete filter value is empty.");
+
+      // Need the numeric sheetId for batchUpdate deleteDimension
+      const meta = await gFetch(`${BASE}?fields=sheets.properties`);
+      const sheetMeta = (meta.sheets || []).find(
+        (s) => s.properties.title === sheetName,
+      );
+      const sheetId = sheetMeta?.properties?.sheetId ?? 0;
+
+      const rows = await readRows("A:Z");
+      const colIndex = ci(filterCol);
+
+      // Collect matching row indices, then reverse so we delete bottom-up
+      // (avoids row-index shift after each deletion)
+      const toDelete = rows
+        .map((row, i) =>
+          String(row[colIndex] ?? "")
+            .toLowerCase()
+            .trim() === filterVal
+            ? i
+            : -1,
+        )
+        .filter((i) => i >= 0)
+        .reverse();
+
+      if (toDelete.length === 0) {
+        context[`${prefix}.success`] = true;
+        context[`${prefix}.affectedRows`] = 0;
+        return;
+      }
+
+      const requests = toDelete.map((rowIdx) => ({
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: rowIdx,
+            endIndex: rowIdx + 1,
+          },
+        },
+      }));
+
+      await gFetch(`${BASE}:batchUpdate`, "POST", { requests });
+
+      context[`${prefix}.success`] = true;
+      context[`${prefix}.affectedRows`] = toDelete.length;
+    }
+  } catch (err) {
+    console.error("[GoogleSheets] Execution error:", err.message);
+    context[`${prefix}.success`] = false;
+    context[`${prefix}.error`] = err.message;
   }
 }
 
@@ -799,5 +1137,57 @@ export const proxyFlowApiRequest = async (req, res) => {
       success: false,
       message: error.message || "Proxy request failed",
     });
+  }
+};
+
+// Execute a Google Sheets node in real-time for flow simulation
+export const simulateGoogleSheetsNode = async (req, res) => {
+  try {
+    const { nodeData, inputContext, accessToken: clientToken } = req.body || {};
+    const userId = req.user._id;
+
+    if (!nodeData) {
+      return res
+        .status(400)
+        .json({ success: false, message: "nodeData is required" });
+    }
+
+    // If the browser sent a fresh token, check if the DB record is missing or
+    // expired and upsert it so the execution below always finds a valid token.
+    if (clientToken && typeof clientToken === "string" && clientToken.length > 10) {
+      const existing = await UserGoogleConnection.findOne({ userId })
+        .select("+accessToken")
+        .lean();
+      const isExpiredOrMissing =
+        !existing?.accessToken ||
+        (existing.expiresAt && new Date(existing.expiresAt) < new Date());
+      if (isExpiredOrMissing) {
+        await UserGoogleConnection.findOneAndUpdate(
+          { userId },
+          { $set: { accessToken: clientToken, expiresAt: new Date(Date.now() + 3595 * 1000) } },
+          { upsert: true },
+        );
+      }
+    }
+
+    const prefix = nodeData.outputPrefix || "sheets";
+    const context = { ...(inputContext || {}) };
+    const mockNode = { data: nodeData };
+
+    await executeGoogleSheetsNode(mockNode, userId, context);
+
+    // Return only the keys that were added/changed by the operation
+    const outputContext = {};
+    Object.keys(context).forEach((k) => {
+      if (k.startsWith(prefix + ".")) {
+        outputContext[k] = context[k];
+      }
+    });
+
+    res.json({ success: true, outputContext });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, message: err.message || "Simulation failed" });
   }
 };

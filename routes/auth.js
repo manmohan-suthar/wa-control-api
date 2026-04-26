@@ -9,6 +9,7 @@ router.post("/register", authController.register);
 router.post("/login", authController.login);
 router.post("/google-login", authController.googleLogin);
 router.get("/me", authMiddleware, authController.getMe);
+router.post("/update-password", authController.updatePassword);
 
 // Admin setup endpoint - Set user role
 router.post("/set-admin", authMiddleware, async (req, res) => {

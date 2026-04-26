@@ -12,6 +12,7 @@ import MediaCollection from "../models/Media.js";
 import MediaSettings from "../models/MediaSettings.js";
 import OpenRouterSettings from "../models/OpenRouterSettings.js";
 import MetaSystemSettings from "../meta/models/MetaSystemSettings.js";
+import GoogleOAuthSettings from "../models/GoogleOAuthSettings.js";
 import Flow from "../models/Flow.js";
 
 const router = express.Router();
@@ -1209,6 +1210,71 @@ router.put("/meta-settings", authMiddleware, async (req, res) => {
         maskedAppSecret: maskSecret(settings.metaAppSecret || ""),
       },
       message: "Meta settings saved",
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ── Google OAuth Settings ─────────────────────────────────────────────────────
+router.get("/google-oauth-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    let settings = await GoogleOAuthSettings.findOne({ key: "global" })
+      .select("+clientSecret")
+      .lean();
+    if (!settings) {
+      const created = await GoogleOAuthSettings.create({ key: "global" });
+      settings = { ...created.toObject(), clientSecret: "" };
+    }
+    res.json({
+      success: true,
+      data: {
+        clientId: settings.clientId || "",
+        hasClientSecret: !!settings.clientSecret,
+        maskedClientSecret: maskSecret(settings.clientSecret || ""),
+        enabled: settings.enabled !== false,
+        updatedAt: settings.updatedAt,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/google-oauth-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const { clientId, clientSecret, enabled } = req.body || {};
+    const update = {};
+
+    if (typeof clientId === "string") update.clientId = clientId.trim();
+    if (typeof clientSecret === "string" && clientSecret.trim())
+      update.clientSecret = clientSecret.trim();
+    if (typeof enabled === "boolean") update.enabled = enabled;
+
+    if (!Object.keys(update).length) {
+      return res.status(400).json({ success: false, error: "No settings provided" });
+    }
+
+    const settings = await GoogleOAuthSettings.findOneAndUpdate(
+      { key: "global" },
+      { $set: update },
+      { upsert: true, new: true, runValidators: true },
+    )
+      .select("+clientSecret")
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        clientId: settings.clientId || "",
+        hasClientSecret: !!settings.clientSecret,
+        maskedClientSecret: maskSecret(settings.clientSecret || ""),
+        enabled: settings.enabled !== false,
+        updatedAt: settings.updatedAt,
+      },
+      message: "Google OAuth settings saved",
     });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
