@@ -9,9 +9,55 @@ import { sendSubscriptionError } from "../utils/subscription.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import { formatFilePath } from "../utils/fileUpload.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const UPLOADS_DIR = path.join(__dirname, "../uploads");
+
+function getUploadedFileType(mimetype = "") {
+  if (mimetype.startsWith("image/")) return "image";
+  if (mimetype.startsWith("video/")) return "video";
+  if (mimetype.includes("pdf")) return "pdf";
+  if (mimetype.includes("audio")) return "audio";
+  return "document";
+}
+
+function removeUploadedFile(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (_) {
+    // Ignore cleanup failures.
+  }
+}
+
+// Upload a file for a campaign and return a lightweight URL payload.
+export const uploadCampaignMedia = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ success: false, error: "No file provided" });
+    }
+
+    await SubscriptionService.assertStorageLimit(req.user, req.file.size || 0);
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        url: formatFilePath(req.file.filename),
+        type: getUploadedFileType(req.file.mimetype),
+        name: req.file.originalname,
+        size: req.file.size,
+        fileSize: req.file.size,
+      },
+    });
+  } catch (error) {
+    removeUploadedFile(req.file?.path);
+    return sendSubscriptionError(res, error, "Failed to upload campaign media");
+  }
+};
 
 // Create Campaign
 export const createCampaign = async (req, res) => {
@@ -99,32 +145,51 @@ export const createCampaign = async (req, res) => {
       maxDelay: Number(maxDelay) || 30,
       randomizeDelay: !!randomizeDelay,
       autoRetry: !!autoRetry,
-      repeat: repeat && typeof repeat === "object" ? {
-        enabled: !!repeat.enabled,
-        type: repeat.type || "daily",
-        time: repeat.time || "09:00",
-        days: Array.isArray(repeat.days) ? repeat.days : [],
-      } : { enabled: false, type: "daily", time: "09:00", days: [] },
+      repeat:
+        repeat && typeof repeat === "object"
+          ? {
+              enabled: !!repeat.enabled,
+              type: repeat.type || "daily",
+              time: repeat.time || "09:00",
+              days: Array.isArray(repeat.days) ? repeat.days : [],
+            }
+          : { enabled: false, type: "daily", time: "09:00", days: [] },
       // Multi-session
       sessions: (() => {
-        const ids = Array.isArray(sessions) && sessions.length > 0 ? sessions : [sessionId];
+        const ids =
+          Array.isArray(sessions) && sessions.length > 0
+            ? sessions
+            : [sessionId];
         return [...new Set(ids)].map((id) => new mongoose.Types.ObjectId(id));
       })(),
       multiSession: {
-        enabled: !!(multiSession?.enabled && Array.isArray(sessions) && sessions.length > 1),
+        enabled: !!(
+          multiSession?.enabled &&
+          Array.isArray(sessions) &&
+          sessions.length > 1
+        ),
         mode: multiSession?.mode === "round-robin" ? "round-robin" : "split",
       },
       status: normalizedMode === "scheduled" ? "scheduled" : "draft",
       // Normalize media: prefer new mediaFiles array, fall back to legacy single fields
       mediaFiles: (() => {
         if (Array.isArray(mediaFiles) && mediaFiles.length > 0) {
-          return mediaFiles.filter((m) => m.url).map((m) => ({
-            url: m.url,
-            type: m.type || "image",
-            name: m.name || "file",
-          }));
+          return mediaFiles
+            .filter((m) => m.url)
+            .map((m) => ({
+              url: m.url,
+              type: m.type || "image",
+              name: m.name || "file",
+            }));
         }
-        if (mediaUrl) return [{ url: mediaUrl, type: mediaType || "image", name: mediaName || "file" }];
+        if (mediaUrl)
+          return [
+            {
+              url: mediaUrl,
+              type: mediaType || "image",
+              name: mediaName || "file",
+            },
+          ];
         return [];
       })(),
       mediaUrl: mediaUrl || null,
@@ -498,24 +563,46 @@ export const getCampaignReport = async (req, res) => {
         .json({ success: false, error: "Campaign not found" });
     }
 
+    // Calculate stats from messageLog for accuracy
+    const messageLog = campaign.messageLog || [];
+    const calculatedStats = {
+      total: messageLog.length,
+      sent: messageLog.filter(
+        (m) => m.status === "sent" || m.status === "delivered",
+      ).length,
+      delivered: messageLog.filter((m) => m.status === "delivered").length,
+      failed: messageLog.filter((m) => m.status === "failed").length,
+      pending: messageLog.filter((m) => m.status === "pending").length,
+    };
+
+    // Fallback to stored stats if messageLog calculation doesn't apply
+    const stats = calculatedStats.total > 0 ? calculatedStats : campaign.stats;
+
+    const deliveryRate =
+      stats.total > 0 ? ((stats.delivered / stats.total) * 100).toFixed(2) : 0;
+    const successRate =
+      stats.sent > 0 ? ((stats.delivered / stats.sent) * 100).toFixed(2) : 0;
+
+    // Get recent message logs (last 20)
+    const recentLogs = messageLog.slice(-20).reverse();
+
     const report = {
       campaignId: campaign._id,
       name: campaign.name,
+      description: campaign.description,
       type: campaign.type,
       status: campaign.status,
       progress: campaign.progress,
-      stats: campaign.stats,
-      deliveryRate:
-        campaign.stats.total > 0
-          ? ((campaign.stats.delivered / campaign.stats.total) * 100).toFixed(2)
-          : 0,
-      successRate:
-        campaign.stats.sent > 0
-          ? ((campaign.stats.delivered / campaign.stats.sent) * 100).toFixed(2)
-          : 0,
-      messageLog: campaign.messageLog,
+      stats: stats,
+      deliveryRate: deliveryRate,
+      successRate: successRate,
+      recentLogs: recentLogs,
+      totalLogs: messageLog.length,
       createdAt: campaign.createdAt,
       completedAt: campaign.completedAt,
+      duration: campaign.completedAt
+        ? new Date(campaign.completedAt) - new Date(campaign.createdAt)
+        : new Date() - new Date(campaign.createdAt),
     };
 
     res.json({ success: true, data: report });
@@ -538,17 +625,34 @@ async function sendCampaignMessages(campaign) {
     let sessionPool = []; // [{ id: ObjectId, sessionIdString: "wa_xxx", phone: "..." }]
 
     if (campaign.multiSession?.enabled && campaign.sessions?.length > 1) {
-      const sessionDocs = await WhatsAppSession.find({ _id: { $in: campaign.sessions } });
+      const sessionDocs = await WhatsAppSession.find({
+        _id: { $in: campaign.sessions },
+      });
       sessionPool = sessionDocs
         .filter((s) => s.status === "connected")
-        .map((s) => ({ id: s._id, sessionIdString: s.sessionId, phone: s.phone || s.sessionId }));
-      if (sessionPool.length === 0) throw new Error("No connected sessions available in session pool");
-      console.log(`🔀 Multi-Session Mode: ${campaign.multiSession.mode} across ${sessionPool.length} sessions`);
-      sessionPool.forEach((s, idx) => console.log(`   [${idx + 1}] ${s.phone} (${s.sessionIdString})`));
+        .map((s) => ({
+          id: s._id,
+          sessionIdString: s.sessionId,
+          phone: s.phone || s.sessionId,
+        }));
+      if (sessionPool.length === 0)
+        throw new Error("No connected sessions available in session pool");
+      console.log(
+        `🔀 Multi-Session Mode: ${campaign.multiSession.mode} across ${sessionPool.length} sessions`,
+      );
+      sessionPool.forEach((s, idx) =>
+        console.log(`   [${idx + 1}] ${s.phone} (${s.sessionIdString})`),
+      );
     } else {
       const session = await WhatsAppSession.findById(campaign.sessionId);
       if (!session) throw new Error("WhatsApp session not found");
-      sessionPool = [{ id: session._id, sessionIdString: session.sessionId, phone: session.phone || session.sessionId }];
+      sessionPool = [
+        {
+          id: session._id,
+          sessionIdString: session.sessionId,
+          phone: session.phone || session.sessionId,
+        },
+      ];
     }
 
     // Returns which session pool entry to use for message at global index i
@@ -572,12 +676,24 @@ async function sendCampaignMessages(campaign) {
     // Build contact data lookup map from the number list (digits-last-10 → row)
     const contactMap = {};
     try {
-      const numberList = await NumberList.findById(campaign.numberListId).lean();
+      const numberList = await NumberList.findById(
+        campaign.numberListId,
+      ).lean();
       if (numberList?.contactData?.length && numberList?.variables?.length) {
-        const phoneKeywords = ["phone", "number", "mobile", "contact", "no", "num", "tel", "whatsapp"];
-        const numCol = numberList.variables.find((v) =>
-          phoneKeywords.some((kw) => v.toLowerCase().includes(kw))
-        ) || numberList.variables[0];
+        const phoneKeywords = [
+          "phone",
+          "number",
+          "mobile",
+          "contact",
+          "no",
+          "num",
+          "tel",
+          "whatsapp",
+        ];
+        const numCol =
+          numberList.variables.find((v) =>
+            phoneKeywords.some((kw) => v.toLowerCase().includes(kw)),
+          ) || numberList.variables[0];
         numberList.contactData.forEach((row) => {
           const raw = String(row[numCol] || "");
           const digits = raw.replace(/\D/g, "");
@@ -586,7 +702,9 @@ async function sendCampaignMessages(campaign) {
           }
         });
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (_) {
+      /* non-fatal */
+    }
 
     for (let i = 0; i < pendingMessages.length; i++) {
       const messageLog = pendingMessages[i];
@@ -600,7 +718,9 @@ async function sendCampaignMessages(campaign) {
         }
 
         // Replace placeholders in message — support both {{var}} and {var} syntax
-        const recipientLast10 = String(messageLog.phoneNumber).replace(/\D/g, "").slice(-10);
+        const recipientLast10 = String(messageLog.phoneNumber)
+          .replace(/\D/g, "")
+          .slice(-10);
         const contactRow = contactMap[recipientLast10] || {};
         let messageText = campaign.message;
         // {{variable}} replacements from CSV contact data
@@ -608,12 +728,23 @@ async function sendCampaignMessages(campaign) {
           if (key === "phone") return messageLog.phoneNumber;
           if (key === "date") return new Date().toLocaleDateString();
           if (key === "time") return new Date().toLocaleTimeString();
-          return contactRow[key] !== undefined ? String(contactRow[key]) : match;
+          return contactRow[key] !== undefined
+            ? String(contactRow[key])
+            : match;
         });
         // Legacy {variable} placeholders
-        messageText = messageText.replace("{name}", contactRow["name"] || contactRow["Name"] || "User");
-        messageText = messageText.replace("{date}", new Date().toLocaleDateString());
-        messageText = messageText.replace("{time}", new Date().toLocaleTimeString());
+        messageText = messageText.replace(
+          "{name}",
+          contactRow["name"] || contactRow["Name"] || "User",
+        );
+        messageText = messageText.replace(
+          "{date}",
+          new Date().toLocaleDateString(),
+        );
+        messageText = messageText.replace(
+          "{time}",
+          new Date().toLocaleTimeString(),
+        );
         messageText = messageText.replace("{phone}", messageLog.phoneNumber);
 
         const activeSession = getSession(i, pendingMessages.length);
@@ -634,8 +765,12 @@ async function sendCampaignMessages(campaign) {
         const resolveMediaItem = (m) => {
           if (!m?.url) return null;
           if (m.url.startsWith("/uploads/")) {
-            const diskPath = path.join(UPLOADS_DIR, m.url.replace("/uploads/", ""));
-            if (fs.existsSync(diskPath)) return { path: diskPath, mime: mimeMap[m.type] || "image/jpeg" };
+            const diskPath = path.join(
+              UPLOADS_DIR,
+              m.url.replace("/uploads/", ""),
+            );
+            if (fs.existsSync(diskPath))
+              return { path: diskPath, mime: mimeMap[m.type] || "image/jpeg" };
           }
           return null;
         };
@@ -644,15 +779,30 @@ async function sendCampaignMessages(campaign) {
           campaign.mediaFiles?.length > 0
             ? campaign.mediaFiles
             : campaign.mediaUrl
-              ? [{ url: campaign.mediaUrl, type: campaign.mediaType, name: campaign.mediaName }]
+              ? [
+                  {
+                    url: campaign.mediaUrl,
+                    type: campaign.mediaType,
+                    name: campaign.mediaName,
+                  },
+                ]
               : [];
 
         const totalMessages = Math.max(mediaList.length, 1);
-        await SubscriptionService.assertMessageQuota({ _id: campaign.userId }, totalMessages);
+        await SubscriptionService.assertMessageQuota(
+          { _id: campaign.userId },
+          totalMessages,
+        );
 
         if (mediaList.length === 0) {
           // Text-only message
-          await WhatsAppService.sendMessage(sessionIdString, messageLog.phoneNumber, messageText, null, null);
+          await WhatsAppService.sendMessage(
+            sessionIdString,
+            messageLog.phoneNumber,
+            messageText,
+            null,
+            null,
+          );
         } else {
           // First media carries the text
           const firstResolved = resolveMediaItem(mediaList[0]);
@@ -667,14 +817,23 @@ async function sendCampaignMessages(campaign) {
           for (let mi = 1; mi < mediaList.length; mi++) {
             const resolved = resolveMediaItem(mediaList[mi]);
             if (resolved) {
-              await WhatsAppService.sendMessage(sessionIdString, messageLog.phoneNumber, "", resolved.path, resolved.mime);
+              await WhatsAppService.sendMessage(
+                sessionIdString,
+                messageLog.phoneNumber,
+                "",
+                resolved.path,
+                resolved.mime,
+              );
             }
           }
         }
 
         const result = { status: "sent" };
 
-        await SubscriptionService.consumeMessageQuota(campaign.userId, totalMessages);
+        await SubscriptionService.consumeMessageQuota(
+          campaign.userId,
+          totalMessages,
+        );
 
         // Update message log to sent
         const logEntry = freshCampaign.messageLog.find(
@@ -689,7 +848,9 @@ async function sendCampaignMessages(campaign) {
         freshCampaign.stats.sent += 1;
         freshCampaign.stats.pending -= 1;
         successCount++;
-        console.log(`✅ Message sent to +${messageLog.phoneNumber} via ${activeSession.phone}`);
+        console.log(
+          `✅ Message sent to +${messageLog.phoneNumber} via ${activeSession.phone}`,
+        );
       } catch (error) {
         console.error(
           `❌ Failed to send to +${messageLog.phoneNumber}: ${error.message}`,
@@ -770,8 +931,9 @@ async function sendCampaignMessages(campaign) {
           try {
             // Use the session that originally sent (if tracked), otherwise primary
             const retrySessionId = log.sentBy || campaign.sessionId;
-            const retrySession = await WhatsAppSession.findById(retrySessionId)
-              || await WhatsAppSession.findById(campaign.sessionId);
+            const retrySession =
+              (await WhatsAppSession.findById(retrySessionId)) ||
+              (await WhatsAppSession.findById(campaign.sessionId));
             await SubscriptionService.assertMessageQuota(
               { _id: campaign.userId },
               1,
@@ -818,7 +980,8 @@ async function sendCampaignMessages(campaign) {
         if (nextRun) {
           try {
             const nl = await NumberList.findById(finalCampaign.numberListId);
-            const phones = nl?.numbers || finalCampaign.messageLog.map((l) => l.phoneNumber);
+            const phones =
+              nl?.numbers || finalCampaign.messageLog.map((l) => l.phoneNumber);
             await Campaign.findByIdAndUpdate(finalCampaign._id, {
               status: "scheduled",
               scheduledFor: nextRun,
@@ -826,10 +989,22 @@ async function sendCampaignMessages(campaign) {
               progress: 0,
               currentIndex: 0,
               completedAt: null,
-              stats: { total: phones.length, sent: 0, delivered: 0, failed: 0, pending: phones.length },
-              messageLog: phones.map((p) => ({ phoneNumber: p, status: "pending", retryCount: 0 })),
+              stats: {
+                total: phones.length,
+                sent: 0,
+                delivered: 0,
+                failed: 0,
+                pending: phones.length,
+              },
+              messageLog: phones.map((p) => ({
+                phoneNumber: p,
+                status: "pending",
+                retryCount: 0,
+              })),
             });
-            console.log(`🔁 Campaign "${finalCampaign.name}" scheduled for next run: ${nextRun.toLocaleString()}`);
+            console.log(
+              `🔁 Campaign "${finalCampaign.name}" scheduled for next run: ${nextRun.toLocaleString()}`,
+            );
           } catch (repeatErr) {
             console.error("Error scheduling repeat run:", repeatErr.message);
           }
@@ -894,40 +1069,155 @@ function computeNextRunAt(repeat) {
 export const updateCampaignSchedule = async (req, res) => {
   try {
     const { id } = req.params;
-    const { mode, scheduledFor, repeat, minDelay, maxDelay, randomizeDelay, delaySeconds } = req.body;
+    const {
+      mode,
+      scheduledFor,
+      repeat,
+      minDelay,
+      maxDelay,
+      randomizeDelay,
+      delaySeconds,
+    } = req.body;
     const userId = req.user.id;
 
     const update = { updatedAt: new Date() };
-    if (mode !== undefined) update.mode = mode === "delayed" ? "interval" : mode;
-    if (scheduledFor !== undefined) update.scheduledFor = scheduledFor ? new Date(scheduledFor) : null;
-    if (repeat !== undefined) update.repeat = {
-      enabled: !!repeat.enabled,
-      type: repeat.type || "daily",
-      time: repeat.time || "09:00",
-      days: Array.isArray(repeat.days) ? repeat.days : [],
-    };
+    if (mode !== undefined)
+      update.mode = mode === "delayed" ? "interval" : mode;
+    if (scheduledFor !== undefined)
+      update.scheduledFor = scheduledFor ? new Date(scheduledFor) : null;
+    if (repeat !== undefined)
+      update.repeat = {
+        enabled: !!repeat.enabled,
+        type: repeat.type || "daily",
+        time: repeat.time || "09:00",
+        days: Array.isArray(repeat.days) ? repeat.days : [],
+      };
     if (minDelay !== undefined) update.minDelay = Number(minDelay);
     if (maxDelay !== undefined) update.maxDelay = Number(maxDelay);
     if (randomizeDelay !== undefined) update.randomizeDelay = !!randomizeDelay;
     if (delaySeconds !== undefined) update.delaySeconds = Number(delaySeconds);
 
     // If switching to scheduled mode with a future date, mark as scheduled
-    if (update.mode === "scheduled" && update.scheduledFor && update.scheduledFor > new Date()) {
+    if (
+      update.mode === "scheduled" &&
+      update.scheduledFor &&
+      update.scheduledFor > new Date()
+    ) {
       update.status = "scheduled";
     }
 
     const campaign = await Campaign.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(id), userId: new mongoose.Types.ObjectId(userId) },
+      {
+        _id: new mongoose.Types.ObjectId(id),
+        userId: new mongoose.Types.ObjectId(userId),
+      },
       update,
-      { new: true }
+      { new: true },
     );
 
-    if (!campaign) return res.status(404).json({ success: false, error: "Campaign not found" });
+    if (!campaign)
+      return res
+        .status(404)
+        .json({ success: false, error: "Campaign not found" });
 
     res.json({ success: true, data: campaign });
   } catch (error) {
     console.error("Error updating campaign schedule:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Update the primary session used by a campaign.
+export const updateCampaignSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { sessionId } = req.body;
+    const userId = req.user.id;
+
+    if (!sessionId) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing sessionId" });
+    }
+
+    const campaign = await Campaign.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      userId: new mongoose.Types.ObjectId(userId),
+    });
+
+    if (!campaign) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Campaign not found" });
+    }
+
+    if (campaign.status === "running") {
+      return res.status(400).json({
+        success: false,
+        error: "Pause the campaign before changing its session",
+      });
+    }
+
+    const session = await WhatsAppSession.findOne({
+      _id: new mongoose.Types.ObjectId(sessionId),
+      userId: new mongoose.Types.ObjectId(userId),
+    });
+
+    if (!session) {
+      return res
+        .status(404)
+        .json({ success: false, error: "WhatsApp session not found" });
+    }
+
+    if (session.status !== "connected") {
+      return res
+        .status(400)
+        .json({ success: false, error: "WhatsApp session is not connected" });
+    }
+
+    const currentSessionIds = Array.isArray(campaign.sessions)
+      ? campaign.sessions.map((sid) => String(sid))
+      : [];
+    const nextSessionIds = [
+      String(session._id),
+      ...currentSessionIds.filter((sid) => sid !== String(session._id)),
+    ];
+
+    const update = {
+      sessionId: session._id,
+      sessions: nextSessionIds.map((sid) => new mongoose.Types.ObjectId(sid)),
+      updatedAt: new Date(),
+    };
+
+    if (campaign.multiSession) {
+      const currentMultiSession = campaign.multiSession.toObject
+        ? campaign.multiSession.toObject()
+        : { ...campaign.multiSession };
+      update.multiSession = {
+        ...currentMultiSession,
+        enabled: !!(currentMultiSession.enabled && nextSessionIds.length > 1),
+        mode:
+          currentMultiSession.mode === "round-robin" ? "round-robin" : "split",
+      };
+    }
+
+    const updatedCampaign = await Campaign.findOneAndUpdate(
+      {
+        _id: new mongoose.Types.ObjectId(id),
+        userId: new mongoose.Types.ObjectId(userId),
+      },
+      update,
+      { new: true },
+    );
+
+    return res.json({
+      success: true,
+      data: updatedCampaign,
+      message: "Campaign session updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating campaign session:", error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -947,6 +1237,7 @@ export const startCampaignById = async (campaignId) => {
 };
 
 export default {
+  uploadCampaignMedia,
   createCampaign,
   getCampaigns,
   getCampaignDetails,
@@ -958,4 +1249,5 @@ export default {
   deleteCampaign,
   getCampaignReport,
   updateCampaignSchedule,
+  updateCampaignSession,
 };

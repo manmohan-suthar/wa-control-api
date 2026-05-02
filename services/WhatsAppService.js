@@ -195,32 +195,69 @@ class WhatsAppService {
           }, 1500);
         } else if (!shouldReconnect) {
           // Genuine WhatsApp logout — user scanned "Log out" on phone
-          console.log(`[${sessionId}] Logged out from WhatsApp, marking disconnected`);
-          SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
-          if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
-
+          console.log(
+            `[${sessionId}] Logged out from WhatsApp, marking disconnected`,
+          );
+          SessionModel.updateOne(
+            { sessionId },
+            { status: "disconnected" },
+          ).catch(console.error);
+          if (io)
+            io.to(sessionId).emit("status", {
+              sessionId,
+              status: "disconnected",
+            });
+          this.emitSessionUpdate(sessionId, { status: "disconnected" });
         } else {
           // Unexpected close (pre-auth retries exhausted or unknown reason).
           // If creds.json still exists the phone is likely still authenticated —
           // schedule one recovery reconnect with a longer delay before giving up.
           const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
           if (existsSync(credsPath)) {
-            console.log(`[${sessionId}] Unexpected close but creds exist — recovery reconnect in 15 s`);
+            console.log(
+              `[${sessionId}] Unexpected close but creds exist — recovery reconnect in 15 s`,
+            );
             this.reconnectAttempts.delete(sessionId); // reset counter for next attempt
-            SessionModel.updateOne({ sessionId }, { status: "connecting" }).catch(console.error);
-            if (io) io.to(sessionId).emit("status", { sessionId, status: "connecting" });
+            SessionModel.updateOne(
+              { sessionId },
+              { status: "connecting" },
+            ).catch(console.error);
+            if (io)
+              io.to(sessionId).emit("status", {
+                sessionId,
+                status: "connecting",
+              });
+            this.emitSessionUpdate(sessionId, { status: "connecting" });
             setTimeout(() => {
               if (!this.sockets.has(sessionId)) {
                 this.reconnectSession(sessionId).catch((err) => {
-                  console.error(`[${sessionId}] Recovery reconnect failed:`, err.message);
-                  SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
-                  if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
+                  console.error(
+                    `[${sessionId}] Recovery reconnect failed:`,
+                    err.message,
+                  );
+                  this.emitSessionUpdate(sessionId, { status: "disconnected" });
+                  SessionModel.updateOne(
+                    { sessionId },
+                    { status: "disconnected" },
+                  ).catch(console.error);
+                  if (io)
+                    io.to(sessionId).emit("status", {
+                      sessionId,
+                      status: "disconnected",
+                    });
                 });
               }
             }, 15_000);
           } else {
-            SessionModel.updateOne({ sessionId }, { status: "disconnected" }).catch(console.error);
-            if (io) io.to(sessionId).emit("status", { sessionId, status: "disconnected" });
+            SessionModel.updateOne(
+              { sessionId },
+              { status: "disconnected" },
+            ).catch(console.error);
+            if (io)
+              io.to(sessionId).emit("status", {
+                sessionId,
+                status: "disconnected",
+              });
           }
         }
       }
@@ -830,7 +867,9 @@ class WhatsAppService {
 
       if (this.sockets.has(sessionId)) {
         try {
-          this.sockets.get(sessionId).end({ error: null, reason: "Reconnecting" });
+          this.sockets
+            .get(sessionId)
+            .end({ error: null, reason: "Reconnecting" });
         } catch (e) {}
         this.sockets.delete(sessionId);
       }
@@ -863,7 +902,9 @@ class WhatsAppService {
 
           if (!existsSync(credsPath)) {
             if (session.status !== "disconnected") {
-              console.log(`Skipping restore for ${session.sessionId}: creds.json missing`);
+              console.log(
+                `Skipping restore for ${session.sessionId}: creds.json missing`,
+              );
               await SessionModel.updateOne(
                 { sessionId: session.sessionId },
                 { status: "disconnected" },
@@ -875,7 +916,9 @@ class WhatsAppService {
           // Skip if socket already exists in map (shouldn't happen at startup)
           if (this.sockets.has(session.sessionId)) continue;
 
-          console.log(`Restoring session: ${session.sessionId} (prev status: ${session.status})`);
+          console.log(
+            `Restoring session: ${session.sessionId} (prev status: ${session.status})`,
+          );
           const authState = await useMultiFileAuthState(sessionPath);
           const sock = await this.createSocket(session.sessionId, authState);
           this.sockets.set(session.sessionId, sock);
@@ -1090,7 +1133,7 @@ class WhatsAppService {
     if (!session) return null;
 
     const sock = this.sockets.get(sessionId);
-    const isLiveConnected = !!(sock?.user?.id);
+    const isLiveConnected = !!sock?.user?.id;
 
     // 1. Socket is alive but DB is stale → sync DB silently and return "connected"
     if (isLiveConnected && session.status !== "connected") {
@@ -1109,10 +1152,15 @@ class WhatsAppService {
     }
 
     // 2. DB says connected/connecting but socket is gone → trigger recovery
-    if (!isLiveConnected && ["connected", "connecting"].includes(session.status)) {
+    if (
+      !isLiveConnected &&
+      ["connected", "connecting"].includes(session.status)
+    ) {
       const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
       if (existsSync(credsPath)) {
-        console.log(`[${sessionId}] Socket missing for ${session.status} session — triggering reconnect`);
+        console.log(
+          `[${sessionId}] Socket missing for ${session.status} session — triggering reconnect`,
+        );
         this.reconnectSession(sessionId).catch(console.error);
         return {
           sessionId: session.sessionId,
@@ -1129,8 +1177,12 @@ class WhatsAppService {
     if (!isLiveConnected && session.status === "disconnected") {
       const credsPath = join(SESSIONS_DIR, sessionId, "creds.json");
       if (existsSync(credsPath)) {
-        console.log(`[${sessionId}] Disconnected but creds exist — auto-reconnecting`);
-        SessionModel.updateOne({ sessionId }, { status: "connecting" }).catch(console.error);
+        console.log(
+          `[${sessionId}] Disconnected but creds exist — auto-reconnecting`,
+        );
+        SessionModel.updateOne({ sessionId }, { status: "connecting" }).catch(
+          console.error,
+        );
         this.reconnectSession(sessionId).catch(console.error);
         return {
           sessionId: session.sessionId,
@@ -1149,6 +1201,42 @@ class WhatsAppService {
       phoneNumber: session.phoneNumber,
       lastConnected: session.lastConnected,
     };
+  }
+
+  /**
+   * Emit session status update to ALL connected sockets of a user.
+   * This ensures real-time sync across all browser tabs/devices.
+   * Uses user room (user:${userId}) instead of session room.
+   */
+  async emitSessionUpdate(sessionId, statusInfo) {
+    if (!this.io) return;
+
+    try {
+      const session = await SessionModel.findOne({ sessionId });
+      if (!session) return;
+
+      const userId = session.userId.toString();
+      const timestamp = new Date().toISOString();
+
+      const updatePayload = {
+        sessionId,
+        name: session.name,
+        status: statusInfo.status || session.status,
+        phoneNumber: statusInfo.phoneNumber || session.phoneNumber,
+        lastConnected: statusInfo.lastConnected || session.lastConnected,
+        lastUpdated: timestamp,
+      };
+
+      // Broadcast to user room (all client instances receive this)
+      this.io.to(`user:${userId}`).emit("session:update", updatePayload);
+
+      console.log(`[${sessionId}] Emitted session:update to user:${userId}`, {
+        status: updatePayload.status,
+        timestamp,
+      });
+    } catch (err) {
+      console.error(`[${sessionId}] emitSessionUpdate error:`, err.message);
+    }
   }
 }
 
