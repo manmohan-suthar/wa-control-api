@@ -39,24 +39,19 @@ export const listSessions = async (req, res) => {
       .select("-credentials")
       .sort({ createdAt: -1 });
 
-    const sessionsWithStatus = await Promise.all(
-      sessions.map(async (session) => {
-        const statusInfo = await WhatsAppService.getSessionStatus(
-          session.sessionId,
-        );
-        return {
-          _id: session._id,
-          sessionId: session.sessionId,
-          name: session.name,
-          status: statusInfo?.status || session.status,
-          phone: session.phoneNumber,
-          phoneNumber: session.phoneNumber,
-          chatViewEnabled: !!session.chatViewEnabled,
-          lastConnected: session.lastConnected,
-          createdAt: session.createdAt,
-        };
-      }),
-    );
+    // Return sessions using DB-stored status only. Avoid probing live socket here
+    // to prevent UI flips caused by transient socket state.
+    const sessionsWithStatus = sessions.map((session) => ({
+      _id: session._id,
+      sessionId: session.sessionId,
+      name: session.name,
+      status: session.status,
+      phone: session.phoneNumber,
+      phoneNumber: session.phoneNumber,
+      chatViewEnabled: !!session.chatViewEnabled,
+      lastConnected: session.lastConnected,
+      createdAt: session.createdAt,
+    }));
 
     res.json({ success: true, data: sessionsWithStatus });
   } catch (err) {
@@ -77,12 +72,11 @@ export const getSession = async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const statusInfo = await WhatsAppService.getSessionStatus(id);
-
+    // Return DB-stored session status only (don't probe live socket here).
     res.json({
       sessionId: session.sessionId,
       name: session.name,
-      status: statusInfo?.status || session.status,
+      status: session.status,
       phoneNumber: session.phoneNumber,
       chatViewEnabled: !!session.chatViewEnabled,
       lastConnected: session.lastConnected,

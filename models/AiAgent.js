@@ -20,6 +20,10 @@ const aiAgentSchema = new mongoose.Schema(
     replyCount: { type: Number, default: 0 },
     lastRepliedAt: { type: Date, default: null },
 
+    // Add auto-reply state
+    autoReplyEnabled: { type: Boolean, default: false },
+    autoReplyStartedAt: { type: Date, default: null },
+
     config: {
       trigger: {
         condition: {

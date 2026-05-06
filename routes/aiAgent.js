@@ -15,49 +15,92 @@ router.post("/knowledge/summarize", async (req, res) => {
     const { sourceType = "text", context = "" } = req.body || {};
 
     if (!["text", "file"].includes(sourceType))
-      return res.status(400).json({ success: false, error: "Invalid sourceType" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid sourceType" });
 
     const rawContext = String(context || "").trim();
     if (!rawContext)
-      return res.status(400).json({ success: false, error: "Context is required" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Context is required" });
 
-    const limitedLines = rawContext.split(/\r?\n/).slice(0, 100)
-      .map(l => l.trimEnd()).join("\n").trim();
+    const limitedLines = rawContext
+      .split(/\r?\n/)
+      .slice(0, 100)
+      .map((l) => l.trimEnd())
+      .join("\n")
+      .trim();
 
     const settings = await OpenRouterSettings.findOne({ key: "global" }).lean();
     if (!settings?.apiKey)
-      return res.status(400).json({ success: false, error: "OpenRouter API key not configured by admin" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "OpenRouter API key not configured by admin",
+        });
 
     const model = settings.model || "openai/gpt-4o-mini";
-    const resp  = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
       body: JSON.stringify({
-        model, temperature: 0.2, max_tokens: 300,
+        model,
+        temperature: 0.2,
+        max_tokens: 300,
         messages: [
-          { role: "system", content: "Return only a compact business summary in plain text. Include key facts: services, pricing, contact info, policies. Keep it concise but comprehensive." },
-          { role: "user",   content: `Summarize this company info:\n\n${limitedLines}` },
+          {
+            role: "system",
+            content:
+              "Return only a compact business summary in plain text. Include key facts: services, pricing, contact info, policies. Keep it concise but comprehensive.",
+          },
+          {
+            role: "user",
+            content: `Summarize this company info:\n\n${limitedLines}`,
+          },
         ],
       }),
     });
 
     const data = await resp.json();
     if (!resp.ok)
-      return res.status(502).json({ success: false, error: data?.error?.message || "OpenRouter request failed" });
+      return res
+        .status(502)
+        .json({
+          success: false,
+          error: data?.error?.message || "OpenRouter request failed",
+        });
 
     const summary = (data?.choices?.[0]?.message?.content || "").trim();
     if (!summary)
-      return res.status(502).json({ success: false, error: "No summary returned" });
+      return res
+        .status(502)
+        .json({ success: false, error: "No summary returned" });
 
     const lineCount = limitedLines.split(/\r?\n/).length;
     const saved = await AiKnowledgeSummary.create({
-      userId: req.user._id, sourceType,
+      userId: req.user._id,
+      sourceType,
       contextLineCount: lineCount,
       contextPreview: limitedLines.slice(0, 4000),
-      summary, model, openRouterSettingsId: settings._id,
+      summary,
+      model,
+      openRouterSettingsId: settings._id,
     });
 
-    return res.json({ success: true, data: { summary, summaryId: saved._id, model, contextLineCount: lineCount } });
+    return res.json({
+      success: true,
+      data: {
+        summary,
+        summaryId: saved._id,
+        model,
+        contextLineCount: lineCount,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -72,13 +115,21 @@ router.get("/agents", async (req, res) => {
       .lean();
 
     // Attach session details
-    const sessionIds = agents.map(a => a.sessionId);
-    const sessions = await WhatsAppSession.find({ sessionId: { $in: sessionIds } })
-      .select("sessionId name phoneNumber status").lean();
+    const sessionIds = agents.map((a) => a.sessionId);
+    const sessions = await WhatsAppSession.find({
+      sessionId: { $in: sessionIds },
+    })
+      .select("sessionId name phoneNumber status")
+      .lean();
     const sessMap = {};
-    sessions.forEach(s => { sessMap[s.sessionId] = s; });
+    sessions.forEach((s) => {
+      sessMap[s.sessionId] = s;
+    });
 
-    const rows = agents.map(a => ({ ...a, session: sessMap[a.sessionId] || null }));
+    const rows = agents.map((a) => ({
+      ...a,
+      session: sessMap[a.sessionId] || null,
+    }));
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -88,12 +139,19 @@ router.get("/agents", async (req, res) => {
 // ── Get single agent ───────────────────────────────────────────────────────
 router.get("/agents/:id", async (req, res) => {
   try {
-    const agent = await AiAgent.findOne({ _id: req.params.id, userId: req.user._id })
+    const agent = await AiAgent.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    })
       .populate("knowledgeSummaryId", "summary contextPreview model createdAt")
       .lean();
-    if (!agent) return res.status(404).json({ success: false, error: "Agent not found" });
-    const session = await WhatsAppSession.findOne({ sessionId: agent.sessionId })
-      .select("sessionId name phoneNumber status").lean();
+    if (!agent)
+      return res.status(404).json({ success: false, error: "Agent not found" });
+    const session = await WhatsAppSession.findOne({
+      sessionId: agent.sessionId,
+    })
+      .select("sessionId name phoneNumber status")
+      .lean();
     res.json({ success: true, data: { ...agent, session: session || null } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -103,8 +161,12 @@ router.get("/agents/:id", async (req, res) => {
 // ── Get reply logs for an agent ───────────────────────────────────────────
 router.get("/agents/:id/replies", async (req, res) => {
   try {
-    const agent = await AiAgent.findOne({ _id: req.params.id, userId: req.user._id }).lean();
-    if (!agent) return res.status(404).json({ success: false, error: "Agent not found" });
+    const agent = await AiAgent.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    }).lean();
+    if (!agent)
+      return res.status(404).json({ success: false, error: "Agent not found" });
     const logs = await AiReplyLog.find({ agentId: req.params.id })
       .sort({ createdAt: -1 })
       .limit(100)
@@ -119,11 +181,20 @@ router.get("/agents/:id/replies", async (req, res) => {
 router.post("/agents", async (req, res) => {
   try {
     const { sessionId, agentName, knowledgeSummaryId, config } = req.body;
-    if (!sessionId) return res.status(400).json({ success: false, error: "sessionId required" });
+    if (!sessionId)
+      return res
+        .status(400)
+        .json({ success: false, error: "sessionId required" });
 
     // Verify session belongs to user
-    const session = await WhatsAppSession.findOne({ sessionId, userId: req.user._id });
-    if (!session) return res.status(404).json({ success: false, error: "Session not found" });
+    const session = await WhatsAppSession.findOne({
+      sessionId,
+      userId: req.user._id,
+    });
+    if (!session)
+      return res
+        .status(404)
+        .json({ success: false, error: "Session not found" });
 
     const agent = await AiAgent.findOneAndUpdate(
       { userId: req.user._id, sessionId },
@@ -148,15 +219,32 @@ router.post("/agents", async (req, res) => {
 router.patch("/agents/:id/session", async (req, res) => {
   try {
     const { newSessionId } = req.body;
-    if (!newSessionId) return res.status(400).json({ success: false, error: "newSessionId required" });
+    if (!newSessionId)
+      return res
+        .status(400)
+        .json({ success: false, error: "newSessionId required" });
 
-    const session = await WhatsAppSession.findOne({ sessionId: newSessionId, userId: req.user._id });
-    if (!session) return res.status(404).json({ success: false, error: "Session not found" });
+    const session = await WhatsAppSession.findOne({
+      sessionId: newSessionId,
+      userId: req.user._id,
+    });
+    if (!session)
+      return res
+        .status(404)
+        .json({ success: false, error: "Session not found" });
 
     // Prevent linking to a session that already has a different agent
-    const conflict = await AiAgent.findOne({ userId: req.user._id, sessionId: newSessionId });
+    const conflict = await AiAgent.findOne({
+      userId: req.user._id,
+      sessionId: newSessionId,
+    });
     if (conflict && conflict._id.toString() !== req.params.id) {
-      return res.status(409).json({ success: false, error: "Another agent is already assigned to that session" });
+      return res
+        .status(409)
+        .json({
+          success: false,
+          error: "Another agent is already assigned to that session",
+        });
     }
 
     const agent = await AiAgent.findOneAndUpdate(
@@ -164,7 +252,8 @@ router.patch("/agents/:id/session", async (req, res) => {
       { $set: { sessionId: newSessionId } },
       { new: true },
     );
-    if (!agent) return res.status(404).json({ success: false, error: "Agent not found" });
+    if (!agent)
+      return res.status(404).json({ success: false, error: "Agent not found" });
 
     res.json({ success: true, data: agent });
   } catch (err) {
@@ -175,8 +264,12 @@ router.patch("/agents/:id/session", async (req, res) => {
 // ── Toggle active ──────────────────────────────────────────────────────────
 router.patch("/agents/:id/toggle", async (req, res) => {
   try {
-    const agent = await AiAgent.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!agent) return res.status(404).json({ success: false, error: "Agent not found" });
+    const agent = await AiAgent.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    });
+    if (!agent)
+      return res.status(404).json({ success: false, error: "Agent not found" });
     agent.isActive = !agent.isActive;
     await agent.save();
     res.json({ success: true, data: { isActive: agent.isActive } });
@@ -188,8 +281,12 @@ router.patch("/agents/:id/toggle", async (req, res) => {
 // ── Delete agent ───────────────────────────────────────────────────────────
 router.delete("/agents/:id", async (req, res) => {
   try {
-    const deleted = await AiAgent.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
-    if (!deleted) return res.status(404).json({ success: false, error: "Agent not found" });
+    const deleted = await AiAgent.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user._id,
+    });
+    if (!deleted)
+      return res.status(404).json({ success: false, error: "Agent not found" });
     res.json({ success: true, message: "Agent deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -200,17 +297,30 @@ router.delete("/agents/:id", async (req, res) => {
 router.post("/test-chat", async (req, res) => {
   try {
     const { message, agentId, summaryId } = req.body;
-    if (!message) return res.status(400).json({ success: false, error: "message required" });
+    if (!message)
+      return res
+        .status(400)
+        .json({ success: false, error: "message required" });
 
     const settings = await OpenRouterSettings.findOne({ key: "global" }).lean();
     if (!settings?.apiKey)
-      return res.status(400).json({ success: false, error: "OpenRouter API key not configured" });
+      return res
+        .status(400)
+        .json({ success: false, error: "OpenRouter API key not configured" });
 
     // Get summary
     let summaryText = "";
-    const sid = summaryId || (agentId ? (await AiAgent.findOne({ _id: agentId, userId: req.user._id }).lean())?.knowledgeSummaryId : null);
+    const sid =
+      summaryId ||
+      (agentId
+        ? (await AiAgent.findOne({ _id: agentId, userId: req.user._id }).lean())
+            ?.knowledgeSummaryId
+        : null);
     if (sid) {
-      const ks = await AiKnowledgeSummary.findOne({ _id: sid, userId: req.user._id }).lean();
+      const ks = await AiKnowledgeSummary.findOne({
+        _id: sid,
+        userId: req.user._id,
+      }).lean();
       if (ks?.summary) summaryText = ks.summary;
     }
 
@@ -221,19 +331,29 @@ router.post("/test-chat", async (req, res) => {
     const model = settings.model || "openai/gpt-4o-mini";
     const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
       body: JSON.stringify({
-        model, temperature: 0.5, max_tokens: 200,
+        model,
+        temperature: 0.5,
+        max_tokens: 200,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user",   content: message },
+          { role: "user", content: message },
         ],
       }),
     });
 
     const data = await resp.json();
     if (!resp.ok)
-      return res.status(502).json({ success: false, error: data?.error?.message || "OpenRouter error" });
+      return res
+        .status(502)
+        .json({
+          success: false,
+          error: data?.error?.message || "OpenRouter error",
+        });
 
     const reply = (data?.choices?.[0]?.message?.content || "").trim();
     res.json({ success: true, data: { reply, model } });
@@ -249,10 +369,82 @@ router.get("/status", async (req, res) => {
     res.json({
       success: true,
       data: {
-        configured: !!(settings?.apiKey),
+        configured: !!settings?.apiKey,
         model: settings?.model || "openai/gpt-4o-mini",
       },
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Get agent status with auto-reply state ────────────────────────────────────
+router.get("/status", async (req, res) => {
+  try {
+    const agent = await AiAgent.findOne({ userId: req.user._id });
+    if (!agent) {
+      return res.json({ success: true, data: { agent: null } });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        agent: {
+          ...agent.toObject(),
+          autoReplyEnabled: agent.autoReplyEnabled,
+          autoReplyStartedAt: agent.autoReplyStartedAt,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Start auto-reply ───────────────────────────────────────────────────────
+router.post("/start-auto-reply", async (req, res) => {
+  try {
+    const agent = await AiAgent.findOneAndUpdate(
+      { userId: req.user._id },
+      {
+        autoReplyEnabled: true,
+        autoReplyStartedAt: new Date(),
+      },
+      { new: true },
+    );
+
+    if (!agent) {
+      return res.status(404).json({ success: false, error: "Agent not found" });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        autoReplyStartedAt: agent.autoReplyStartedAt,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Stop auto-reply ────────────────────────────────────────────────────────
+router.post("/stop-auto-reply", async (req, res) => {
+  try {
+    const agent = await AiAgent.findOneAndUpdate(
+      { userId: req.user._id },
+      {
+        autoReplyEnabled: false,
+        autoReplyStartedAt: null,
+      },
+      { new: true },
+    );
+
+    if (!agent) {
+      return res.status(404).json({ success: false, error: "Agent not found" });
+    }
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

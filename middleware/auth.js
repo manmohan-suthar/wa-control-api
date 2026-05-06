@@ -6,7 +6,13 @@ const authMiddleware = async (req, res, next) => {
     // ── Check x-api-key header first ─────────────────────────────────────────
     const apiKeyHeader = (req.headers["x-api-key"] || "").trim();
     if (apiKeyHeader) {
-      console.log("\n🔐 [AUTH]", req.method, req.originalUrl, "| x-api-key[:20]:", apiKeyHeader.slice(0, 20));
+      console.log(
+        "\n🔐 [AUTH]",
+        req.method,
+        req.originalUrl,
+        "| x-api-key[:20]:",
+        apiKeyHeader.slice(0, 20),
+      );
       const user = await findUserByApiKey(apiKeyHeader);
       if (!user) {
         return res.status(401).json({
@@ -14,21 +20,33 @@ const authMiddleware = async (req, res, next) => {
           hint: "Generate a new key at /dashboard/api-keys",
         });
       }
-      console.log("🔐 [AUTH] ✅ API key OK — user:", String(user._id), user.email);
+      console.log(
+        "🔐 [AUTH] ✅ API key OK — user:",
+        String(user._id),
+        user.email,
+      );
       req.user = user;
       return next();
     }
 
     // ── Fall back to Authorization Bearer (JWT or API key) ───────────────────
     const header = req.headers.authorization || "";
-    const token  = header.startsWith("Bearer ") ? header.slice(7).trim() : header.trim();
+    const token = header.startsWith("Bearer ")
+      ? header.slice(7).trim()
+      : header.trim();
 
-    console.log("\n🔐 [AUTH]", req.method, req.originalUrl, "| token[:20]:", token.slice(0, 20));
+    console.log(
+      "\n🔐 [AUTH]",
+      req.method,
+      req.originalUrl,
+      "| token[:20]:",
+      token.slice(0, 20),
+    );
 
     if (!token) {
       return res.status(401).json({
         error: "No authentication provided",
-        hint: "Add header: x-api-key: wac_live_… (get your key from /dashboard/api-keys)",
+        hint: "Sign in to the app or send an Authorization: Bearer <token> header",
       });
     }
 
@@ -42,7 +60,11 @@ const authMiddleware = async (req, res, next) => {
           hint: "Generate a new key at /dashboard/api-keys",
         });
       }
-      console.log("🔐 [AUTH] ✅ API key OK — user:", String(user._id), user.email);
+      console.log(
+        "🔐 [AUTH] ✅ API key OK — user:",
+        String(user._id),
+        user.email,
+      );
       req.user = user;
       return next();
     }
@@ -53,7 +75,7 @@ const authMiddleware = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({
         error: "JWT invalid or expired — please re-login",
-        hint: "Use x-api-key header with your API key instead (wac_live_… / wac_test_…)",
+        hint: "Refresh your login session and retry the request",
       });
     }
 
@@ -62,7 +84,9 @@ const authMiddleware = async (req, res, next) => {
     next();
   } catch (err) {
     console.error("🔐 [AUTH] 💥", err.message);
-    return res.status(401).json({ error: "Authentication failed", detail: err.message });
+    return res
+      .status(401)
+      .json({ error: "Authentication failed", detail: err.message });
   }
 };
 
