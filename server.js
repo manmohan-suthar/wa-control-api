@@ -109,23 +109,36 @@ const MONGODB_URI =
 
 const start = async () => {
   try {
+    // ✅ 1. START SERVER FIRST (VERY IMPORTANT)
+    httpServer.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+
+    // ✅ 2. CONNECT MONGODB (NON-BLOCKING)
     console.log("Connecting to MongoDB...");
-    await mongoose.connect(MONGODB_URI);
-    console.log("MongoDB connected");
+    mongoose
+      .connect(process.env.MONGODB_URI)
+      .then(() => console.log("✅ MongoDB connected"))
+      .catch((err) => console.error("❌ MongoDB error:", err.message));
 
-    console.log("Bootstrapping subscription defaults...");
-    await SubscriptionService.bootstrapDefaults();
+    // ✅ 3. BOOTSTRAP (NON-BLOCKING)
+    SubscriptionService.bootstrapDefaults().catch((err) =>
+      console.error("Bootstrap error:", err.message),
+    );
 
-    console.log("Restoring WhatsApp sessions...");
-    await WhatsAppService.restoreSessions();
+    // ✅ 4. RESTORE WHATSAPP (NON-BLOCKING - VERY IMPORTANT)
+    WhatsAppService.restoreSessions().catch((err) =>
+      console.error("WA restore error:", err.message),
+    );
 
-    // Scheduled campaign launcher — checks every 60 seconds
+    // ✅ 5. SCHEDULER (SAFE)
     const runScheduler = async () => {
       try {
         const due = await Campaign.find({
           status: "scheduled",
           scheduledFor: { $lte: new Date() },
         });
+
         for (const c of due) {
           await startCampaignById(c._id);
         }
@@ -133,15 +146,14 @@ const start = async () => {
         console.error("[SCHEDULER] Error:", err.message);
       }
     };
-    runScheduler(); // run once on boot
-    setInterval(runScheduler, 60_000);
 
-    httpServer.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
+    // run after slight delay (DB ready hone ke liye)
+    setTimeout(() => {
+      runScheduler();
+      setInterval(runScheduler, 60_000);
+    }, 5000);
   } catch (err) {
-    console.error("Failed to start server:", err);
-    process.exit(1);
+    console.error("Startup error:", err);
   }
 };
 
