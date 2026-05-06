@@ -102,7 +102,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 const MONGODB_URI =
   process.env.MONGODB_URI ||
   "mongodb+srv://admin:admin@cmr0.3uulrrh.mongodb.net";
@@ -127,31 +127,31 @@ const start = async () => {
     );
 
     // ✅ 4. RESTORE WHATSAPP (NON-BLOCKING - VERY IMPORTANT)
-    WhatsAppService.restoreSessions().catch((err) =>
-      console.error("WA restore error:", err.message),
-    );
+    // WhatsAppService.restoreSessions().catch((err) =>
+    //   console.error("WA restore error:", err.message),
+    // );
 
     // ✅ 5. SCHEDULER (SAFE)
-    const runScheduler = async () => {
-      try {
-        const due = await Campaign.find({
-          status: "scheduled",
-          scheduledFor: { $lte: new Date() },
-        });
+    // const runScheduler = async () => {
+    //   try {
+    //     const due = await Campaign.find({
+    //       status: "scheduled",
+    //       scheduledFor: { $lte: new Date() },
+    //     });
 
-        for (const c of due) {
-          await startCampaignById(c._id);
-        }
-      } catch (err) {
-        console.error("[SCHEDULER] Error:", err.message);
-      }
-    };
+    //     for (const c of due) {
+    //       await startCampaignById(c._id);
+    //     }
+    //   } catch (err) {
+    //     console.error("[SCHEDULER] Error:", err.message);
+    //   }
+    // };
 
     // run after slight delay (DB ready hone ke liye)
-    setTimeout(() => {
-      runScheduler();
-      setInterval(runScheduler, 60_000);
-    }, 5000);
+    // setTimeout(() => {
+    //   runScheduler();
+    //   setInterval(runScheduler, 60_000);
+    // }, 5000);
   } catch (err) {
     console.error("Startup error:", err);
   }
