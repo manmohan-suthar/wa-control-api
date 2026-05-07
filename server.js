@@ -23,8 +23,8 @@ import chatRoutes from "./routes/chats.js";
 import aiAgentRoutes from "./routes/aiAgent.js";
 import flowRoutes from "./routes/flows.js";
 import metaRoutes from "./meta/routes/index.js";
-import instagramRoutes from "./instagram/routes/instagram.js";
-import instagramAiAgentRoutes from "./instagram/routes/instagram-ai-agent.js";
+// import instagramRoutes from "./instagram/routes/instagram.js";
+// import instagramAiAgentRoutes from "./instagram/routes/instagram-ai-agent.js";
 import googleReviewRoutes from "./google-review/routes/google-review.js";
 import reelRoutes from "./routes/reelCampaigns.js";
 import { setSocketIO as setReelSocketIO } from "./controllers/reelCampaignController.js";
@@ -52,7 +52,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Campaign API is running v1");
+  res.send("WhatsApp Campaign API is running v1.0.1");
 });
 
 // Serve uploaded files
@@ -74,8 +74,8 @@ app.use("/api/chats", chatRoutes);
 app.use("/api/ai-agent", aiAgentRoutes);
 app.use("/api/flows", flowRoutes);
 app.use("/api/meta", metaRoutes);
-app.use("/api/instagram", instagramRoutes);
-app.use("/api/instagram/ai-agent", instagramAiAgentRoutes);
+// app.use("/api/instagram", instagramRoutes);
+// app.use("/api/instagram/ai-agent", instagramAiAgentRoutes);
 app.use("/api/google-review", googleReviewRoutes);
 app.use("/api/reels", reelRoutes);
 
