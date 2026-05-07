@@ -198,3 +198,32 @@ export async function deleteReel(req, res) {
   await Reel.deleteOne({ _id: reelId });
   res.json({ success: true });
 }
+
+export async function deleteCampaign(req, res) {
+  const campaignId = req.params.id;
+  const owner = req.user?._id;
+
+  const campaign = await ReelCampaign.findOne({
+    _id: campaignId,
+    owner,
+  });
+
+  if (!campaign) return res.status(404).json({ error: "Not found" });
+
+  const reels = await Reel.find({ campaign: campaign._id });
+
+  for (const reel of reels) {
+    try {
+      if (reel.path) fs.unlinkSync(reel.path);
+    } catch (e) {}
+  }
+
+  try {
+    if (campaign.tempDownloadPath) fs.unlinkSync(campaign.tempDownloadPath);
+  } catch (e) {}
+
+  await Reel.deleteMany({ campaign: campaign._id });
+  await ReelCampaign.deleteOne({ _id: campaign._id });
+
+  res.json({ success: true });
+}

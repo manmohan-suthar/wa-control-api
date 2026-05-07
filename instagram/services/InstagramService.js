@@ -1255,7 +1255,10 @@ async function fetchRecentMediaWithComments(userId, options = {}) {
 
   const businessAccountId = session?.graph?.instagramBusinessAccountId;
   if (!businessAccountId) {
-    return { success: false, error: "No Instagram business account connected" };
+    return {
+      success: false,
+      error: "No Instagram business account connected",
+    };
   }
 
   try {
@@ -1268,29 +1271,48 @@ async function fetchRecentMediaWithComments(userId, options = {}) {
       limit: options.limit || 10,
     };
 
+    console.log(
+      `[Fetch Media] URL: ${mediaUrl}, Limit: ${options.limit || 10}`,
+    );
     const mediaRes = await axios.get(mediaUrl, { params: mediaParams });
     const mediaList = mediaRes.data.data || [];
+    console.log(`[Fetch Media] Retrieved ${mediaList.length} media items`);
 
     // Fetch comments for each media
     const mediaWithComments = [];
+    let totalCommentsFetched = 0;
+
     for (const media of mediaList) {
       const commentsUrl = `https://graph.facebook.com/${GRAPH_API_VERSION}/${media.id}/comments`;
       const commentsParams = {
         fields: "id,text,username,timestamp,like_count",
         access_token: resolveGraphAccessToken(session.graph),
-        limit: options.commentsLimit || 50,
+        limit: options.commentsLimit || 100,
       };
 
       try {
+        console.log(
+          `[Fetch Comments] Fetching for media ${media.id} (${media.media_type})`,
+        );
         const commentsRes = await axios.get(commentsUrl, {
           params: commentsParams,
         });
+        const comments = commentsRes.data.data || [];
+        console.log(
+          `[Fetch Comments] Got ${comments.length} comments for media ${media.id}`,
+        );
         mediaWithComments.push({
           ...media,
-          comments: commentsRes.data.data || [],
+          comments,
         });
+        totalCommentsFetched += comments.length;
       } catch (e) {
-        console.log("[Comments Fetch] Skipped for media", media.id);
+        const errorMsg =
+          e.response?.data?.error?.message || e.message || "Unknown error";
+        console.error(
+          `[Fetch Comments] Error for media ${media.id}: ${errorMsg}`,
+        );
+        // Still add media with empty comments
         mediaWithComments.push({
           ...media,
           comments: [],
@@ -1298,15 +1320,16 @@ async function fetchRecentMediaWithComments(userId, options = {}) {
       }
     }
 
+    console.log(
+      `[Fetch Media With Comments] Total comments fetched: ${totalCommentsFetched}`,
+    );
     return { success: true, data: mediaWithComments };
   } catch (error) {
-    console.error(
-      "[Instagram Fetch Media With Comments Error]",
-      error.response?.data || error.message,
-    );
+    const errorMsg = error.response?.data?.error?.message || error.message;
+    console.error("[Instagram Fetch Media With Comments Error]", errorMsg);
     return {
       success: false,
-      error: error.response?.data?.error?.message || error.message,
+      error: errorMsg,
     };
   }
 }

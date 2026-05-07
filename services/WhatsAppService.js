@@ -7,8 +7,8 @@ import makeWASocket, {
 import { Boom } from "@hapi/boom";
 import mongoose from "mongoose";
 import * as qrcode from "qrcode";
-import { writeFileSync, existsSync, mkdirSync, rmSync } from "fs";
-import { join, dirname } from "path";
+import { writeFileSync, existsSync, mkdirSync, rmSync, readFileSync } from "fs";
+import { join, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import {
   WhatsAppSession as SessionModel,
@@ -43,6 +43,71 @@ class WhatsAppService {
     const t = this.heartbeats.get(sessionId);
     if (t) clearInterval(t);
     this.heartbeats.delete(sessionId);
+  }
+
+  normalizeJid(phoneNumber) {
+    const rawValue = String(phoneNumber || "").trim();
+
+    if (!rawValue) {
+      throw new Error("Phone number is required");
+    }
+
+    if (rawValue.includes("@")) {
+      return rawValue;
+    }
+
+    const digits = rawValue.replace(/\D/g, "");
+    if (!digits) {
+      throw new Error("Invalid phone number");
+    }
+
+    const normalizedDigits = digits.length === 10 ? `91${digits}` : digits;
+    return `${normalizedDigits}@s.whatsapp.net`;
+  }
+
+  buildMessagePayload(message, mediaPath = null, mediaType = null) {
+    if (!mediaPath || !mediaType) {
+      return { text: message || "" };
+    }
+
+    const mediaBuffer = readFileSync(mediaPath);
+    const payload = { mimetype: mediaType };
+
+    if (mediaType.startsWith("image/")) {
+      payload.image = mediaBuffer;
+      if (message) payload.caption = message;
+      return payload;
+    }
+
+    if (mediaType.startsWith("video/")) {
+      payload.video = mediaBuffer;
+      if (message) payload.caption = message;
+      return payload;
+    }
+
+    if (mediaType.startsWith("audio/")) {
+      payload.audio = mediaBuffer;
+      payload.ptt = mediaType.includes("ogg");
+      return payload;
+    }
+
+    payload.document = mediaBuffer;
+    payload.fileName = basename(mediaPath);
+    if (message) payload.caption = message;
+    return payload;
+  }
+
+  async sendMessage(sessionId, phoneNumber, message, mediaPath = null, mediaType = null) {
+    const sock = this.sockets.get(sessionId);
+
+    if (!sock?.user?.id) {
+      throw new Error("Session is not connected");
+    }
+
+    const jid = this.normalizeJid(phoneNumber);
+    const payload = this.buildMessagePayload(message, mediaPath, mediaType);
+
+    return sock.sendMessage(jid, payload);
   }
 
   startHeartbeat(sessionId, sock) {

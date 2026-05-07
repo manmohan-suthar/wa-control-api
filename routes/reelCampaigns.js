@@ -1,6 +1,7 @@
 import express from "express";
 import {
   createCampaign,
+  deleteCampaign,
   listCampaigns,
   getCampaign,
   retryReel,
@@ -13,6 +14,7 @@ const router = express.Router();
 router.post("/", auth, createCampaign);
 router.get("/", auth, listCampaigns);
 router.get("/:id", auth, getCampaign);
+router.delete("/:id", auth, deleteCampaign);
 router.post("/reel/:id/retry", auth, retryReel);
 router.delete("/reel/:id", auth, deleteReel);
 

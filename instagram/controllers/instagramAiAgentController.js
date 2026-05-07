@@ -398,12 +398,41 @@ export async function fetchPendingComments(req, res) {
     // Fetch recent media with comments
     const result = await InstagramService.fetchRecentMediaWithComments(
       req.user._id,
-      { limit: 25, commentsLimit: 50 },
+      { limit: 25, commentsLimit: 100 },
+    );
+
+    console.log(
+      `[fetchPendingComments] Result success: ${result.success}, Media count: ${result.data?.length || 0}`,
     );
 
     if (!result.success) {
+      console.error(`[fetchPendingComments] Error: ${result.error}`);
       return res.status(400).json({ success: false, error: result.error });
     }
+
+    if (!result.data || result.data.length === 0) {
+      console.warn(`[fetchPendingComments] No media returned from Instagram`);
+      return res.json({
+        success: true,
+        data: {
+          agent,
+          pendingComments: [],
+          count: 0,
+          debug: "No media found",
+        },
+      });
+    }
+
+    // Count total comments from Instagram
+    let totalCommentsFromAPI = 0;
+    result.data.forEach((m) => {
+      if (m.comments && m.comments.length > 0) {
+        totalCommentsFromAPI += m.comments.length;
+      }
+    });
+    console.log(
+      `[fetchPendingComments] Total comments from Instagram API: ${totalCommentsFromAPI}`,
+    );
 
     // Filter out comments that already have replies in the log
     const repliedLogs = await InstagramAiReplyLog.find({
@@ -413,6 +442,10 @@ export async function fetchPendingComments(req, res) {
       .select("comment.id comment.text comment.username post.id")
       .lean();
 
+    console.log(
+      `[fetchPendingComments] Already replied logs: ${repliedLogs.length}`,
+    );
+
     const repliedCommentKeys = new Set();
     repliedLogs.forEach((log) => {
       buildRepliedCommentKeys(log).forEach((key) =>
@@ -421,13 +454,17 @@ export async function fetchPendingComments(req, res) {
     });
 
     const pendingComments = [];
+    let filteredByTimestamp = 0;
+
     result.data.forEach((media) => {
       if (media.comments && media.comments.length > 0) {
         media.comments.forEach((comment) => {
+          // Check timestamp filter
           const commentTime = comment.timestamp
             ? new Date(comment.timestamp).getTime()
             : null;
           if (cutoffTime && commentTime && commentTime < cutoffTime) {
+            filteredByTimestamp++;
             return;
           }
 
@@ -439,7 +476,11 @@ export async function fetchPendingComments(req, res) {
             `fallback:${mediaId}:${normalizeKeyPart(comment.username)}:${normalizeKeyPart(comment.text)}`,
           ];
 
-          if (!candidateKeys.some((key) => repliedCommentKeys.has(key))) {
+          // Check if already replied
+          const alreadyReplied = candidateKeys.some((key) =>
+            repliedCommentKeys.has(key),
+          );
+          if (!alreadyReplied) {
             pendingComments.push({
               mediaId: media.id,
               mediaCaption: media.caption,
@@ -455,6 +496,10 @@ export async function fetchPendingComments(req, res) {
       }
     });
 
+    console.log(
+      `[fetchPendingComments] Pending comments: ${pendingComments.length}, Filtered by timestamp: ${filteredByTimestamp}`,
+    );
+
     res.json({
       success: true,
       data: {
@@ -464,6 +509,7 @@ export async function fetchPendingComments(req, res) {
       },
     });
   } catch (err) {
+    console.error(`[fetchPendingComments] Exception: ${err.message}`);
     res.status(500).json({ success: false, error: err.message });
   }
 }
