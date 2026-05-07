@@ -6,18 +6,25 @@ const downloadsDir = path.join(process.cwd(), "uploads", "reel-temp");
 if (!fs.existsSync(downloadsDir))
   fs.mkdirSync(downloadsDir, { recursive: true });
 
-export async function downloadYouTube(url, filenameHint = "video", onProgress = null) {
+export async function downloadYouTube(
+  url,
+  filenameHint = "video",
+  onProgress = null,
+) {
   try {
     console.log(`[📥 DOWNLOAD] (innertube) Fetching info for: ${url}`);
     const yt = await Innertube.create();
     const info = await yt.getInfo(url);
 
     // Choose best video+audio format (Innertube provides a download stream)
-    const stream = await yt.download(info.video_details?.id || info.id || info.videoId, {
-      type: "video+audio",
-      quality: "best",
-      format: "mp4",
-    });
+    const stream = await yt.download(
+      info.video_details?.id || info.id || info.videoId,
+      {
+        type: "video+audio",
+        quality: "best",
+        format: "mp4",
+      },
+    );
 
     const outPath = path.join(
       downloadsDir,
@@ -33,8 +40,11 @@ export async function downloadYouTube(url, filenameHint = "video", onProgress = 
       if (!chunk) continue;
       file.write(chunk);
       downloadedBytes += chunk.length;
-      if (onProgress) onProgress({ stage: "downloading", bytes: downloadedBytes });
-      console.log(`[📥 DOWNLOAD] (innertube) Downloaded: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB`);
+      if (onProgress)
+        onProgress({ stage: "downloading", bytes: downloadedBytes });
+      console.log(
+        `[📥 DOWNLOAD] (innertube) Downloaded: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB`,
+      );
     }
 
     await new Promise((res, rej) => file.end(() => res()));
@@ -45,8 +55,13 @@ export async function downloadYouTube(url, filenameHint = "video", onProgress = 
   } catch (err) {
     console.error(`[❌ DOWNLOAD] (innertube) Error: ${err?.message || err}`);
     // Provide guidance for common failures
-    if ((err && err.message && err.message.includes("410")) || err?.statusCode === 410) {
-      throw new Error("Status code: 410 — video unavailable or requires authentication/cookies. Try setting YOUTUBE_COOKIES env var or use an authenticated Innertube session.");
+    if (
+      (err && err.message && err.message.includes("410")) ||
+      err?.statusCode === 410
+    ) {
+      throw new Error(
+        "Status code: 410 — video unavailable or requires authentication/cookies. Try setting YOUTUBE_COOKIES env var or use an authenticated Innertube session.",
+      );
     }
     throw err;
   }

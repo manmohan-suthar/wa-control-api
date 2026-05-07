@@ -113,7 +113,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
 const MONGODB_URI =
   process.env.MONGODB_URI ||
   "mongodb+srv://admin:admin@cmr0.3uulrrh.mongodb.net";
@@ -121,14 +121,15 @@ const MONGODB_URI =
 const start = async () => {
   try {
     // ✅ 1. START SERVER FIRST (VERY IMPORTANT)
-    httpServer.listen(PORT, () => {
+    httpServer.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
 
     // ✅ 2. CONNECT MONGODB (NON-BLOCKING)
     console.log("Connecting to MongoDB...");
+    mongoose;
     mongoose
-      .connect(process.env.MONGODB_URI)
+      .connect(MONGODB_URI)
       .then(() => console.log("✅ MongoDB connected"))
       .catch((err) => console.error("❌ MongoDB error:", err.message));
 

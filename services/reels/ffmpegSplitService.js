@@ -9,7 +9,7 @@ export function splitVideoToClips(inputPath, clipLengthSec, onProgress = null) {
   return new Promise((resolve, reject) => {
     console.log(`[✂️ SPLIT] Starting video split: ${inputPath}`);
     console.log(`[✂️ SPLIT] Clip length: ${clipLengthSec} seconds`);
-    
+
     // Determine duration using ffprobe
     const ffprobe = spawn("ffprobe", [
       "-v",
@@ -26,8 +26,10 @@ export function splitVideoToClips(inputPath, clipLengthSec, onProgress = null) {
     ffprobe.on("close", (code) => {
       const duration = parseFloat(durationOutput) || 0;
       const parts = Math.ceil(duration / clipLengthSec);
-      console.log(`[✂️ SPLIT] Video duration: ${duration.toFixed(2)}s → ${parts} clips`);
-      
+      console.log(
+        `[✂️ SPLIT] Video duration: ${duration.toFixed(2)}s → ${parts} clips`,
+      );
+
       const outputs = [];
 
       let completed = 0;
@@ -38,10 +40,11 @@ export function splitVideoToClips(inputPath, clipLengthSec, onProgress = null) {
           `${path.basename(inputPath, path.extname(inputPath))}_part_${i + 1}.mp4`,
         );
         outputs.push(out);
-        
+
         console.log(`[✂️ SPLIT] Creating clip ${i + 1}/${parts}: ${out}`);
-        if (onProgress) onProgress({ stage: "splitting", current: i + 1, total: parts });
-        
+        if (onProgress)
+          onProgress({ stage: "splitting", current: i + 1, total: parts });
+
         const args = [
           "-y",
           "-ss",
@@ -58,7 +61,12 @@ export function splitVideoToClips(inputPath, clipLengthSec, onProgress = null) {
         ffmpeg.on("close", (c) => {
           completed++;
           console.log(`[✂️ SPLIT] Clip ${completed}/${parts} complete`);
-          if (onProgress) onProgress({ stage: "splitting", current: completed, total: parts });
+          if (onProgress)
+            onProgress({
+              stage: "splitting",
+              current: completed,
+              total: parts,
+            });
           if (completed === parts) {
             console.log(`[✅ SPLIT] All clips created!`);
             resolve(outputs);
@@ -70,11 +78,10 @@ export function splitVideoToClips(inputPath, clipLengthSec, onProgress = null) {
         });
       }
     });
-    
+
     ffprobe.on("error", (err) => {
       console.error(`[❌ SPLIT] FFprobe error: ${err.message}`);
       reject(err);
     });
   });
 }
- 

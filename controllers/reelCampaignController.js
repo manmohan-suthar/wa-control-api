@@ -41,47 +41,75 @@ export async function createCampaign(req, res) {
       status: "processing",
     });
 
-    emitProgress(owner, campaign._id, { stage: "created", message: "Campaign created" });
+    emitProgress(owner, campaign._id, {
+      stage: "created",
+      message: "Campaign created",
+    });
 
     // STEP 1: Download
     console.log(`[🎬 CAMPAIGN] STEP 1: Downloading YouTube video...`);
-    emitProgress(owner, campaign._id, { stage: "downloading", message: "Downloading YouTube video..." });
-    
+    emitProgress(owner, campaign._id, {
+      stage: "downloading",
+      message: "Downloading YouTube video...",
+    });
+
     const downloaded = await downloadYouTube(
       campaign.youtubeUrl,
       campaign.campaignTitle || "youtube",
-      (prog) => emitProgress(owner, campaign._id, { stage: "downloading", ...prog }),
+      (prog) =>
+        emitProgress(owner, campaign._id, { stage: "downloading", ...prog }),
     );
     campaign.tempDownloadPath = downloaded;
     await campaign.save();
 
-    emitProgress(owner, campaign._id, { stage: "downloaded", message: "Video downloaded successfully" });
+    emitProgress(owner, campaign._id, {
+      stage: "downloaded",
+      message: "Video downloaded successfully",
+    });
 
     // STEP 2: Split
     console.log(`[🎬 CAMPAIGN] STEP 2: Splitting video into clips...`);
-    emitProgress(owner, campaign._id, { stage: "splitting", message: "Splitting video into clips..." });
-    
+    emitProgress(owner, campaign._id, {
+      stage: "splitting",
+      message: "Splitting video into clips...",
+    });
+
     const clips = await splitVideoToClips(
       downloaded,
       campaign.reelLengthSec,
-      (prog) => emitProgress(owner, campaign._id, { stage: "splitting", ...prog }),
+      (prog) =>
+        emitProgress(owner, campaign._id, { stage: "splitting", ...prog }),
     );
     campaign.totalReels = clips.length;
     await campaign.save();
 
-    emitProgress(owner, campaign._id, { stage: "split", message: `Video split into ${clips.length} clips` });
+    emitProgress(owner, campaign._id, {
+      stage: "split",
+      message: `Video split into ${clips.length} clips`,
+    });
 
     // STEP 3: create Reel documents and schedule uploads
-    console.log(`[🎬 CAMPAIGN] STEP 3: Generating AI captions for ${clips.length} clips...`);
-    emitProgress(owner, campaign._id, { stage: "captioning", message: "Generating AI captions..." });
-    
+    console.log(
+      `[🎬 CAMPAIGN] STEP 3: Generating AI captions for ${clips.length} clips...`,
+    );
+    emitProgress(owner, campaign._id, {
+      stage: "captioning",
+      message: "Generating AI captions...",
+    });
+
     const reels = [];
     for (let i = 0; i < clips.length; i++) {
       const clipPath = clips[i];
-      
-      console.log(`[🎬 CAMPAIGN] Generating caption ${i + 1}/${clips.length}...`);
-      emitProgress(owner, campaign._id, { stage: "captioning", current: i + 1, total: clips.length });
-      
+
+      console.log(
+        `[🎬 CAMPAIGN] Generating caption ${i + 1}/${clips.length}...`,
+      );
+      emitProgress(owner, campaign._id, {
+        stage: "captioning",
+        current: i + 1,
+        total: clips.length,
+      });
+
       const ai = await generateCaptionForPart({
         campaignTitle: campaign.campaignTitle,
         youtubeTitle: campaign.youtubeTitle || "",
@@ -119,8 +147,14 @@ export async function createCampaign(req, res) {
     campaign.status = "running";
     await campaign.save();
 
-    console.log(`[✅ CAMPAIGN] Campaign creation complete! ${clips.length} reels created.`);
-    emitProgress(owner, campaign._id, { stage: "complete", message: "Campaign ready!", reelCount: clips.length });
+    console.log(
+      `[✅ CAMPAIGN] Campaign creation complete! ${clips.length} reels created.`,
+    );
+    emitProgress(owner, campaign._id, {
+      stage: "complete",
+      message: "Campaign ready!",
+      reelCount: clips.length,
+    });
 
     res.json({ success: true, campaign, reels });
   } catch (err) {
@@ -129,7 +163,7 @@ export async function createCampaign(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
- 
+
 export async function listCampaigns(req, res) {
   const owner = req.user?._id;
   const items = await ReelCampaign.find({ owner }).sort({ createdAt: -1 });
