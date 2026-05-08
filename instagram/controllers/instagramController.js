@@ -1,4 +1,4 @@
-import instagramService from "../services/instagramService.js";
+import instagramService from "../services/InstagramService.js";
 import InstagramDMMessage from "../models/InstagramDMMessage.js";
 
 // Legacy connect (username/password) - now disabled
