@@ -39,9 +39,5 @@
     "razorpay": "^2.9.6",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.5",
-    "youtubei.js": "^17.0.1",
-    "yt-dlp-exec": "^1.0.2",
-    "ytdl-core": "^4.11.5",
-    "ytdlp-nodejs": "^3.4.4"
   }
 }
