@@ -54,7 +54,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Campaign API is running v1.0.1");
+  res.send("WhatsApp Campaign API is running v1.0.2 Amazon Azure");
 });
 
 // Serve uploaded files
