@@ -188,7 +188,6 @@ async function downloadVideoFromSource(
 }
 
 export {
-  downloadYouTube,
-  downloadYouTube as downloadVideoFromSource,
+  downloadVideoFromSource,
   normalizePinterestVideoUrl,
 };
