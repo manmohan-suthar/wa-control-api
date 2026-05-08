@@ -1,5 +1,5 @@
 import InstagramSession from "../../instagram/models/InstagramSession.js";
-import instagramService from "../../instagram/services/instagramService.js";
+import instagramService from "../../instagram/services/InstagramService.js";
 
 /**
  * Get Instagram credentials from user's connected session
