@@ -97,7 +97,13 @@ class WhatsAppService {
     return payload;
   }
 
-  async sendMessage(sessionId, phoneNumber, message, mediaPath = null, mediaType = null) {
+  async sendMessage(
+    sessionId,
+    phoneNumber,
+    message,
+    mediaPath = null,
+    mediaType = null,
+  ) {
     const sock = this.sockets.get(sessionId);
 
     if (!sock?.user?.id) {

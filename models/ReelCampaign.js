@@ -2,7 +2,10 @@ import mongoose from "mongoose";
 
 const ReelCampaignSchema = new mongoose.Schema(
   {
-    youtubeUrl: { type: String, required: true },
+    sourceType: { type: String, default: "youtube" },
+    sourceUrl: { type: String },
+    sourceTitle: { type: String },
+    youtubeUrl: { type: String },
     youtubeTitle: { type: String },
     campaignTitle: { type: String, required: true },
     reelLengthSec: { type: Number, default: 60 },
@@ -14,9 +17,17 @@ const ReelCampaignSchema = new mongoose.Schema(
     owner: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     status: {
       type: String,
-      enum: ["pending", "processing", "running", "completed", "failed"],
+      enum: [
+        "pending",
+        "processing",
+        "running",
+        "paused",
+        "completed",
+        "failed",
+      ],
       default: "pending",
     },
+    previousStatus: { type: String }, // Store previous status for resume
     totalReels: { type: Number, default: 0 },
     uploadedReels: { type: Number, default: 0 },
     failedReels: { type: Number, default: 0 },

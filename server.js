@@ -23,11 +23,13 @@ import chatRoutes from "./routes/chats.js";
 import aiAgentRoutes from "./routes/aiAgent.js";
 import flowRoutes from "./routes/flows.js";
 import metaRoutes from "./meta/routes/index.js";
-// import instagramRoutes from "./instagram/routes/instagram.js";
-// import instagramAiAgentRoutes from "./instagram/routes/instagram-ai-agent.js";
+import instagramRoutes from "./instagram/routes/instagram.js";
+import instagramAiAgentRoutes from "./instagram/routes/instagram-ai-agent.js";
 import googleReviewRoutes from "./google-review/routes/google-review.js";
+import pinterestRoutes from "./routes/pinterest.js";
 import reelRoutes from "./routes/reelCampaigns.js";
 import { setSocketIO as setReelSocketIO } from "./controllers/reelCampaignController.js";
+import { startUploadScheduler } from "./services/reels/uploadScheduler.js";
 import WhatsAppService from "./services/WhatsAppService.js";
 import CampaignService from "./services/CampaignService.js";
 import SubscriptionService from "./services/SubscriptionService.js";
@@ -74,9 +76,10 @@ app.use("/api/chats", chatRoutes);
 app.use("/api/ai-agent", aiAgentRoutes);
 app.use("/api/flows", flowRoutes);
 app.use("/api/meta", metaRoutes);
-// app.use("/api/instagram", instagramRoutes);
-// app.use("/api/instagram/ai-agent", instagramAiAgentRoutes);
+app.use("/api/instagram", instagramRoutes);
+app.use("/api/instagram/ai-agent", instagramAiAgentRoutes);
 app.use("/api/google-review", googleReviewRoutes);
+app.use("/api/pinterest", pinterestRoutes);
 app.use("/api/reels", reelRoutes);
 
 app.get("/health", (req, res) => {
@@ -138,7 +141,10 @@ const start = async () => {
       console.error("Bootstrap error:", err.message),
     );
 
-    // ✅ 4. RESTORE WHATSAPP (NON-BLOCKING - VERY IMPORTANT)
+    // ✅ 4. START REEL UPLOAD SCHEDULER
+    startUploadScheduler(io);
+
+    // ✅ 5. RESTORE WHATSAPP (NON-BLOCKING - VERY IMPORTANT)
     // WhatsAppService.restoreSessions().catch((err) =>
     //   console.error("WA restore error:", err.message),
     // );

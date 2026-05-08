@@ -4,6 +4,115 @@ import OpenRouterSettings from "../../models/OpenRouterSettings.js";
 // Cache for OpenRouter settings
 let cachedSettings = null;
 
+function stripCodeFences(text = "") {
+  return String(text)
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .trim();
+}
+
+function normalizeLine(value = "") {
+  return String(value)
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeTitle(title = "") {
+  let clean = normalizeLine(stripCodeFences(title))
+    .replace(/^"|"$/g, "")
+    .replace(/\s+-\s+part\s*\d+$/i, "")
+    .replace(/^part\s*\d+\s*[:-]?\s*/i, "")
+    .trim();
+
+  if (!clean) return "";
+
+  // Keep title concise and human-readable for reels.
+  if (clean.length > 80) {
+    clean = `${clean.slice(0, 77).trim()}...`;
+  }
+
+  return clean;
+}
+
+function parseCaptionPayload(rawText) {
+  const cleaned = stripCodeFences(rawText);
+
+  // 1) Direct JSON parse
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {}
+
+  // 2) Parse first JSON object block from mixed text
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = cleaned.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+function sanitizeHashtags(hashtags, hashtagCount) {
+  if (!Array.isArray(hashtags)) {
+    return ["reels", "viral", "trending"].slice(0, hashtagCount);
+  }
+
+  const cleaned = hashtags
+    .map((tag) =>
+      String(tag || "")
+        .replace(/^#/, "")
+        .trim(),
+    )
+    .filter(Boolean);
+
+  if (cleaned.length === 0) {
+    return ["reels", "viral", "trending"].slice(0, hashtagCount);
+  }
+
+  return cleaned.slice(0, hashtagCount);
+}
+
+function buildDefaultTitle(campaignTitle, youtubeTitle) {
+  const base = String(campaignTitle || youtubeTitle || "").trim();
+  if (!base) return "new trending reel status";
+  return normalizeTitle(`${base} reel status`) || "new trending reel status";
+}
+
+function normalizeCaptionResult({
+  payload,
+  fallbackText,
+  campaignTitle,
+  youtubeTitle,
+  hashtagCount,
+}) {
+  const safeText = normalizeLine(stripCodeFences(fallbackText || ""));
+  const title =
+    normalizeTitle(payload?.title || "") ||
+    buildDefaultTitle(campaignTitle, youtubeTitle);
+  const hook =
+    normalizeLine(payload?.hook || "") || "Watch till end for the full vibe.";
+  const cta =
+    normalizeLine(payload?.cta || "") || "Follow for more daily reel ideas.";
+  const caption =
+    normalizeLine(payload?.caption || "") ||
+    (safeText
+      ? safeText.slice(0, 220)
+      : "Fresh reel drop. Save and share with friends.");
+  const hashtags = sanitizeHashtags(payload?.hashtags, hashtagCount);
+
+  return {
+    title,
+    hook,
+    cta,
+    caption,
+    hashtags,
+  };
+}
+
 /**
  * Fetch OpenRouter settings from database
  * Caches result for 5 minutes to reduce DB calls
@@ -46,7 +155,24 @@ export async function generateCaptionForPart({
   tone,
   hashtagCount,
 }) {
-  const prompt = `You are a social media copywriter. Given the campaign title: "${campaignTitle}" and original video title: "${youtubeTitle}", create a short catchy reel title for Part ${index}, a strong hook (one sentence), a CTA one-liner, a viral caption combining the hook and CTA, and ${hashtagCount} relevant hashtags in plain text. Tone: ${tone}. Return JSON with keys: title, hook, cta, caption, hashtags (array).`;
+  const topic = String(campaignTitle || youtubeTitle || "").trim();
+  const prompt = [
+    "You are an expert Instagram Reels copywriter for Indian music/status content.",
+    `Topic keywords: \"${topic}\"`,
+    `Tone: ${tone}`,
+    "Write natural, high-converting Hinglish/English copy.",
+    "",
+    "Hard rules:",
+    "1) Return ONLY valid JSON (no markdown, no code block, no extra text).",
+    "2) JSON keys must be exactly: title, hook, cta, caption, hashtags.",
+    "3) title must be plain text, 5-10 words, keyword-focused, and must NOT contain: Part, Episode, Campaign, Vibes - Part 1.",
+    "4) caption must be normal readable text, not JSON.",
+    "5) hashtags must be an array of exactly requested count, lowercase words without # symbol.",
+    `6) hashtags array size must be exactly ${hashtagCount}.`,
+    "",
+    "Example style for title:",
+    "new punjabi song reel karan aujla status",
+  ].join("\n");
 
   const settings = await getOpenRouterSettings();
   const apiKey = settings.apiKey || process.env.OPENROUTER_API_KEY;
@@ -72,7 +198,14 @@ export async function generateCaptionForPart({
         OPENROUTER_URL,
         {
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            {
+              role: "system",
+              content:
+                "Output must be strict JSON only. Never wrap output in markdown code fences.",
+            },
+            { role: "user", content: prompt },
+          ],
           max_tokens: 300,
         },
         {
@@ -90,21 +223,20 @@ export async function generateCaptionForPart({
 
       console.log(`[✅ AI] Caption generated (attempt ${attempt})`);
 
-      // Try to parse JSON response
-      try {
-        const parsed = JSON.parse(text);
-        return parsed;
-      } catch (parseErr) {
-        // If not JSON, extract key info
-        console.warn(`[⚠️ AI] Response not JSON, extracting text...`);
-        return {
-          title: `Part ${index} - ${campaignTitle}`,
-          hook: text.slice(0, 120),
-          cta: "Learn more",
-          caption: text.slice(0, 220),
-          hashtags: ["#reels", "#shorts", "#viral"].slice(0, hashtagCount),
-        };
+      const parsed = parseCaptionPayload(text);
+      if (!parsed) {
+        console.warn(
+          `[⚠️ AI] Response was not valid JSON. Falling back to sanitized text output.`,
+        );
       }
+
+      return normalizeCaptionResult({
+        payload: parsed,
+        fallbackText: text,
+        campaignTitle,
+        youtubeTitle,
+        hashtagCount,
+      });
     } catch (err) {
       console.error(`[❌ AI] Attempt ${attempt} failed:`, err.message || err);
 

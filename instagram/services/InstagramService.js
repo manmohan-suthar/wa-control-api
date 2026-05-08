@@ -1340,6 +1340,8 @@ export default {
   createOAuthState,
   parseOAuthState,
   buildConnectRedirect,
+  exchangeCodeForToken,
+  getLongLivedToken,
   handleOAuthCallback,
   checkSessionStatus,
   removeSession,

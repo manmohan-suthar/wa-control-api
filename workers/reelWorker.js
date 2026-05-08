@@ -40,12 +40,21 @@ try {
         const reel = await Reel.findById(reelId).populate("campaign");
         if (!reel) throw new Error("Reel not found");
 
+        const campaign = reel.campaign;
+
+        // Skip upload if campaign is paused
+        if (campaign.status === "paused") {
+          console.log(`[⏸️  SKIP] Campaign is paused, skipping upload for reel ${reelId}`);
+          throw new Error("Campaign is paused");
+        }
+
         await Reel.findByIdAndUpdate(reelId, { status: "uploading" });
         try {
-          const campaign = reel.campaign;
-          // assemble caption using stored caption or generate
+          // Use stored caption data or generate new
+          let captionData = reel.captionData;
           let caption = reel.caption;
-          if (!caption) {
+          
+          if (!captionData) {
             const ai = await generateCaptionForPart({
               campaignTitle: campaign.campaignTitle,
               youtubeTitle: campaign.youtubeTitle,
@@ -53,9 +62,22 @@ try {
               tone: campaign.captionTone || "Viral",
               hashtagCount: campaign.hashtagCount || 5,
             });
+            
+            captionData = {
+              title: ai.title || `Part ${reel.index}`,
+              hook: ai.hook || "",
+              cta: ai.cta || "Learn more",
+              caption: ai.caption || "",
+              hashtags: ai.hashtags || [],
+            };
+            
             caption = `${ai.hook || ""}\n\n${ai.caption || ""}\n\n${(ai.hashtags || []).join(" ")}`;
-            reel.caption = caption;
-            await reel.save();
+            
+            await Reel.findByIdAndUpdate(reelId, {
+              captionData,
+              caption,
+              hashtags: ai.hashtags || [],
+            });
           }
 
           // access token & ig id should be retrieved from user's connected account (simplified)
@@ -64,7 +86,9 @@ try {
 
           const res = await uploadReel({
             filePath: reel.path,
+            videoUrl: reel.videoUrl,
             caption,
+            captionData,
             accessToken,
             igUserId,
           });
@@ -77,8 +101,8 @@ try {
             $inc: { uploadedReels: 1 },
           });
 
-          // optionally delete file
-          if (campaign.autoDelete) {
+          // optionally delete local file if it exists
+          if (campaign.autoDelete && reel.path) {
             try {
               fs.unlinkSync(reel.path);
             } catch (e) {}

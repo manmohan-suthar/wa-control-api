@@ -1,16 +1,13 @@
 import path from "path";
 import fs from "fs";
-import ytDlp from "yt-dlp-exec";
+import fetch from "node-fetch";
 import ffmpeg from "fluent-ffmpeg";
 
 const downloadsDir = path.join(process.cwd(), "uploads", "reel-temp");
-if (!fs.existsSync(downloadsDir))
+if (!fs.existsSync(downloadsDir)) {
   fs.mkdirSync(downloadsDir, { recursive: true });
+}
 
-/**
- * Clean YouTube URL to remove playlist parameters
- * Extracts only the video ID to avoid playlist mode
- */
 function cleanYouTubeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -20,191 +17,178 @@ function cleanYouTubeUrl(url) {
       return `https://www.youtube.com/watch?v=${videoId}`;
     }
     return url;
-  } catch (e) {
+  } catch (error) {
     return url;
   }
 }
 
-/**
- * Download YouTube video using yt-dlp
- * @param {string} url - YouTube video URL
- * @param {string} filenameHint - Base filename for the output
- * @param {Function} onProgress - Progress callback
- * @returns {Promise<string>} Path to downloaded video file
- */
-export async function downloadYouTube(
-  url,
-  filenameHint = "video",
-  onProgress = null,
-) {
+function isYouTubeUrl(url) {
+  return /youtube\.com|youtu\.be/i.test(url || "");
+}
+
+function isPinterestUrl(url) {
+  return /pinimg\.com|pinterest\.com/i.test(url || "");
+}
+
+function normalizePinterestVideoUrl(url) {
   try {
-    // Clean URL to remove playlist parameters
-    const cleanUrl = cleanYouTubeUrl(url);
-    console.log(`[📥 DOWNLOAD] (yt-dlp) Starting download: ${cleanUrl}`);
+    const parsed = new URL(url);
+    if (!/pinimg\.com/i.test(parsed.hostname)) {
+      return url;
+    }
 
-    const safeFilename = filenameHint.replace(/[^a-z0-9]/gi, "_");
-    const outPath = path.join(
-      downloadsDir,
-      `${safeFilename}_${Date.now()}.mp4`,
-    );
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const videosIndex = parts.indexOf("videos");
 
-    console.log(`[📥 DOWNLOAD] (yt-dlp) Output path: ${outPath}`);
-
-    // Optionally clean old downloads to avoid using previously downloaded AV1/VP9 files
-    if ((process.env.CLEAN_OLD_DOWNLOADS || "false").toLowerCase() === "true") {
-      try {
-        const clipsDir = path.join(process.cwd(), "uploads", "reel-clips");
-        if (fs.existsSync(downloadsDir))
-          fs.rmSync(downloadsDir, { recursive: true, force: true });
-        if (fs.existsSync(clipsDir))
-          fs.rmSync(clipsDir, { recursive: true, force: true });
-        fs.mkdirSync(downloadsDir, { recursive: true });
-        console.log(
-          "[🧹 CLEAN] Removed old downloads in uploads/reel-temp and uploads/reel-clips",
-        );
-      } catch (e) {
-        console.warn(
-          "[🧹 CLEAN] Failed to clean old download folders:",
-          e?.message || e,
-        );
+    if (videosIndex !== -1) {
+      if (parts[videosIndex + 1]) {
+        parts[videosIndex + 1] = "mc";
       }
-    }
 
-    // Prefer H.264 (avc1) MP4 + M4A(AAC) to avoid AV1/VP9/webm
-    const preferredFormat =
-      "bestvideo[vcodec*=avc1][ext=mp4]+bestaudio[ext=m4a]/best[vcodec*=avc1][ext=mp4]";
-    let downloadedWithPreferred = false;
-
-    try {
-      await ytDlp(cleanUrl, {
-        output: outPath,
-        format: preferredFormat,
-        mergeOutputFormat: "mp4",
-        noPlaylist: true,
-      });
-      downloadedWithPreferred = true;
-      console.log(
-        "[📥 DOWNLOAD] (yt-dlp) Downloaded using preferred MP4/H264 format",
-      );
-    } catch (e) {
-      console.warn(
-        `[⚠️ DOWNLOAD] Preferred MP4/H264 format not available, falling back: ${e?.message || e}`,
-      );
-      // Fallback to bestvideo+bestaudio
-      await ytDlp(cleanUrl, {
-        output: outPath,
-        format: "bestvideo+bestaudio/best",
-        mergeOutputFormat: "mp4",
-        noPlaylist: true,
-      });
-    }
-
-    // Optionally re-encode to widely compatible codecs (H.264 + AAC)
-    // Controlled via env var RECODE_TO_H264 (default: true) — set to "false" to skip.
-    const shouldRecode =
-      (process.env.RECODE_TO_H264 || "true").toLowerCase() !== "false";
-
-    // Helper: probe file codecs and decide if conversion is needed
-    async function needsRecode(file) {
-      return new Promise((res) => {
-        ffmpeg.ffprobe(file, (err, metadata) => {
-          if (err || !metadata) return res(true);
-          const video = (metadata.streams || []).find(
-            (s) => s.codec_type === "video",
-          );
-          const audio = (metadata.streams || []).find(
-            (s) => s.codec_type === "audio",
-          );
-
-          if (!video || !audio) return res(true);
-
-          const vcodec = (video.codec_name || "").toLowerCase();
-          const aprefix = (audio.codec_name || "").toLowerCase();
-          const pix = (video.pix_fmt || "").toLowerCase();
-
-          const videoOk = vcodec.includes("h264") || vcodec.includes("avc1");
-          const audioOk = aprefix.includes("aac") || aprefix.includes("mp4a");
-          const pixOk = pix === "yuv420p" || pix === "yuv420p10le";
-
-          // If container isn't mp4, prefer recode
-          const containerOk = path.extname(file).toLowerCase() === ".mp4";
-
-          const needs = !(videoOk && audioOk && pixOk && containerOk);
-          res(needs);
-        });
-      });
-    }
-
-    if (shouldRecode) {
-      const recodeNeeded = await needsRecode(outPath);
-      if (recodeNeeded && !downloadedWithPreferred) {
-        const recodedPath = outPath.replace(/\.mp4$/i, "_h264.mp4");
-        console.log(
-          `[🔁 TRANScode] Converting to H.264+AAC with faststart: ${recodedPath}`,
-        );
-
-        await new Promise((resolve, reject) => {
-          ffmpeg(outPath)
-            .videoCodec("libx264")
-            .audioCodec("aac")
-            .format("mp4")
-            .outputOptions([
-              "-preset fast",
-              "-movflags +faststart",
-              "-pix_fmt yuv420p",
-            ])
-            .on("start", (cmd) => console.log(`[ffmpeg] start: ${cmd}`))
-            .on("progress", (p) =>
-              console.log(`[ffmpeg] progress: ${JSON.stringify(p)}`),
-            )
-            .on("end", () => {
-              try {
-                fs.renameSync(recodedPath, outPath);
-              } catch (e) {
-                // If rename fails, try copy
-                try {
-                  fs.copyFileSync(recodedPath, outPath);
-                  fs.unlinkSync(recodedPath);
-                } catch (ex) {}
-              }
-              console.log(
-                `[✅ TRANScode] Conversion finished and replaced output`,
-              );
-              resolve();
-            })
-            .on("error", (err) => reject(err))
-            .save(recodedPath);
-        });
-      } else {
-        console.log(
-          "[🔁 TRANScode] No conversion needed — file already compatible",
-        );
+      const hlsIndex = parts.indexOf("hls");
+      if (hlsIndex !== -1) {
+        parts[hlsIndex] = "720p";
       }
+
+      parsed.pathname = `/${parts.join("/")}`;
     }
 
-    // Verify file exists
-    if (!fs.existsSync(outPath)) {
-      throw new Error("Downloaded file not found");
-    }
-
-    const fileSize = fs.statSync(outPath).size;
-    console.log(
-      `[✅ DOWNLOAD] (yt-dlp) Complete! File: ${outPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`,
-    );
-
-    if (onProgress) {
-      onProgress({
-        stage: "downloading",
-        message: "Download complete",
-        path: outPath,
-      });
-    }
-
-    return outPath;
-  } catch (err) {
-    console.error(`[❌ DOWNLOAD] (yt-dlp) Error: ${err?.message || err}`);
-    throw new Error(
-      `YouTube download failed: ${err?.message || "Unknown error"}`,
-    );
+    return parsed.toString().replace(/\.m3u8(\?.*)?$/i, ".mp4$1");
+  } catch (error) {
+    return url;
   }
 }
+
+async function downloadWithFetch(url, outPath) {
+  const response = await fetch(url, { redirect: "follow" });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} while downloading remote video`);
+  }
+
+  await new Promise((resolve, reject) => {
+    const fileStream = fs.createWriteStream(outPath);
+    response.body.pipe(fileStream);
+    response.body.on("error", reject);
+    fileStream.on("finish", resolve);
+    fileStream.on("error", reject);
+  });
+}
+
+async function downloadHlsToMp4(url, outPath) {
+  await new Promise((resolve, reject) => {
+    ffmpeg(url)
+      .videoCodec("libx264")
+      .audioCodec("aac")
+      .format("mp4")
+      .outputOptions([
+        "-preset fast",
+        "-movflags +faststart",
+        "-pix_fmt yuv420p",
+      ])
+      .on("start", (cmd) => console.log(`[ffmpeg] start: ${cmd}`))
+      .on("progress", (progress) =>
+        console.log(`[ffmpeg] progress: ${JSON.stringify(progress)}`),
+      )
+      .on("end", resolve)
+      .on("error", reject)
+      .save(outPath);
+  });
+}
+
+async function needsRecode(file) {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(file, (error, metadata) => {
+      if (error || !metadata) return resolve(true);
+
+      const video = (metadata.streams || []).find(
+        (stream) => stream.codec_type === "video",
+      );
+      const audio = (metadata.streams || []).find(
+        (stream) => stream.codec_type === "audio",
+      );
+
+      if (!video || !audio) return resolve(true);
+
+      const vcodec = (video.codec_name || "").toLowerCase();
+      const acodec = (audio.codec_name || "").toLowerCase();
+      const pixFmt = (video.pix_fmt || "").toLowerCase();
+      const containerOk = path.extname(file).toLowerCase() === ".mp4";
+
+      const videoOk = vcodec.includes("h264") || vcodec.includes("avc1");
+      const audioOk = acodec.includes("aac") || acodec.includes("mp4a");
+      const pixOk = pixFmt === "yuv420p" || pixFmt === "yuv420p10le";
+
+      resolve(!(videoOk && audioOk && pixOk && containerOk));
+    });
+  });
+}
+
+async function maybeRecodeToH264(outPath) {
+  const recodeNeeded = await needsRecode(outPath);
+  if (!recodeNeeded) {
+    console.log(
+      "[🔁 TRANSCODE] No conversion needed — file already compatible",
+    );
+    return outPath;
+  }
+
+  const recodedPath = outPath.replace(/\.mp4$/i, "_h264.mp4");
+  console.log(`[🔁 TRANSCODE] Converting to H.264+AAC: ${recodedPath}`);
+
+  await new Promise((resolve, reject) => {
+    ffmpeg(outPath)
+      .videoCodec("libx264")
+      .audioCodec("aac")
+      .format("mp4")
+      .outputOptions([
+        "-preset fast",
+        "-movflags +faststart",
+        "-pix_fmt yuv420p",
+      ])
+      .on("start", (cmd) => console.log(`[ffmpeg] start: ${cmd}`))
+      .on("progress", (progress) =>
+        console.log(`[ffmpeg] progress: ${JSON.stringify(progress)}`),
+      )
+      .on("end", () => {
+        try {
+          fs.renameSync(recodedPath, outPath);
+        } catch (error) {
+          try {
+            fs.copyFileSync(recodedPath, outPath);
+            fs.unlinkSync(recodedPath);
+          } catch (copyError) {
+            console.warn(
+              "[🔁 TRANSCODE] Failed to replace file:",
+              copyError?.message || copyError,
+            );
+          }
+        }
+        resolve();
+      })
+      .on("error", reject)
+      .save(recodedPath);
+  });
+
+  return outPath;
+}
+
+// Video downloading is intentionally disabled. Consumers should provide a
+// local file path or a remote direct MP4 URL (e.g., Pinterest MP4) instead.
+// This stub ensures code that imports `downloadVideoFromSource` will fail
+// fast and clearly when attempting to download via the server.
+async function downloadVideoFromSource(
+  _url,
+  _filenameHint = "video",
+  _onProgress = null,
+) {
+  throw new Error(
+    "Server-side video downloading has been disabled. Provide a local file path or remote MP4 URL instead.",
+  );
+}
+
+export {
+  downloadYouTube,
+  downloadYouTube as downloadVideoFromSource,
+  normalizePinterestVideoUrl,
+};
