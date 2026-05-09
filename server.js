@@ -25,6 +25,7 @@ import flowRoutes from "./routes/flows.js";
 import metaRoutes from "./meta/routes/index.js";
 import instagramRoutes from "./instagram/routes/instagram.js";
 import instagramAiAgentRoutes from "./instagram/routes/instagram-ai-agent.js";
+import webhookRoutes from "./routes/webhook.js";
 import googleReviewRoutes from "./google-review/routes/google-review.js";
 import pinterestRoutes from "./routes/pinterest.js";
 import reelRoutes from "./routes/reelCampaigns.js";
@@ -54,7 +55,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp Campaign API is running v1.0.2 Amazon Azure");
+  res.send("WhatsApp API is running v2.0.0 by ME");
 });
 
 // Serve uploaded files
@@ -78,6 +79,7 @@ app.use("/api/flows", flowRoutes);
 app.use("/api/meta", metaRoutes);
 app.use("/api/instagram", instagramRoutes);
 app.use("/api/instagram/ai-agent", instagramAiAgentRoutes);
+app.use("/api/webhook", webhookRoutes);
 app.use("/api/google-review", googleReviewRoutes);
 app.use("/api/pinterest", pinterestRoutes);
 app.use("/api/reels", reelRoutes);
@@ -133,7 +135,12 @@ const start = async () => {
     mongoose;
     mongoose
       .connect(MONGODB_URI)
-      .then(() => console.log("✅ MongoDB connected"))
+      .then(async () => {
+        console.log("✅ MongoDB connected");
+        await WhatsAppService.restoreSessions().catch((err) =>
+          console.error("WA restore error:", err.message),
+        );
+      })
       .catch((err) => console.error("❌ MongoDB error:", err.message));
 
     // ✅ 3. BOOTSTRAP (NON-BLOCKING)
@@ -143,11 +150,6 @@ const start = async () => {
 
     // ✅ 4. START REEL UPLOAD SCHEDULER
     startUploadScheduler(io);
-
-    // ✅ 5. RESTORE WHATSAPP (NON-BLOCKING - VERY IMPORTANT)
-    // WhatsAppService.restoreSessions().catch((err) =>
-    //   console.error("WA restore error:", err.message),
-    // );
 
     // ✅ 5. SCHEDULER (SAFE)
     // const runScheduler = async () => {

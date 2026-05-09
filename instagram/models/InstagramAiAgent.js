@@ -66,6 +66,13 @@ const instagramAiAgentSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    commentSyncState: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {
+        mediaCursors: {},
+        lastSyncAt: null,
+      },
+    },
   },
   { timestamps: true },
 );

@@ -39,19 +39,21 @@ export const listSessions = async (req, res) => {
       .select("-credentials")
       .sort({ createdAt: -1 });
 
-    // Return sessions using DB-stored status only. Avoid probing live socket here
-    // to prevent UI flips caused by transient socket state.
-    const sessionsWithStatus = sessions.map((session) => ({
-      _id: session._id,
-      sessionId: session.sessionId,
-      name: session.name,
-      status: session.status,
-      phone: session.phoneNumber,
-      phoneNumber: session.phoneNumber,
-      chatViewEnabled: !!session.chatViewEnabled,
-      lastConnected: session.lastConnected,
-      createdAt: session.createdAt,
-    }));
+    const sessionsWithStatus = sessions.map((session) => {
+      const liveSession = WhatsAppService.getLiveSessionSnapshot(session);
+
+      return {
+        _id: session._id,
+        sessionId: session.sessionId,
+        name: session.name,
+        status: liveSession?.status || session.status,
+        phone: liveSession?.phoneNumber || session.phoneNumber,
+        phoneNumber: liveSession?.phoneNumber || session.phoneNumber,
+        chatViewEnabled: !!session.chatViewEnabled,
+        lastConnected: liveSession?.lastConnected || session.lastConnected,
+        createdAt: session.createdAt,
+      };
+    });
 
     res.json({ success: true, data: sessionsWithStatus });
   } catch (err) {
@@ -72,14 +74,15 @@ export const getSession = async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Return DB-stored session status only (don't probe live socket here).
+    const liveSession = WhatsAppService.getLiveSessionSnapshot(session);
+
     res.json({
       sessionId: session.sessionId,
       name: session.name,
-      status: session.status,
-      phoneNumber: session.phoneNumber,
+      status: liveSession?.status || session.status,
+      phoneNumber: liveSession?.phoneNumber || session.phoneNumber,
       chatViewEnabled: !!session.chatViewEnabled,
-      lastConnected: session.lastConnected,
+      lastConnected: liveSession?.lastConnected || session.lastConnected,
       createdAt: session.createdAt,
     });
   } catch (err) {
@@ -121,7 +124,22 @@ export const getSessionQR = async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const qrCode = WhatsAppService.getPendingQR(id);
+    // Try to get QR code immediately
+    let qrCode = WhatsAppService.getPendingQR(id);
+
+    // If QR code is not immediately available, wait for it (max 5 seconds)
+    // This handles the race condition where QR generation is async
+    if (!qrCode) {
+      const maxWaitTime = 5000; // 5 seconds max
+      const checkInterval = 100; // Check every 100ms
+      let waited = 0;
+
+      while (!qrCode && waited < maxWaitTime) {
+        await new Promise((resolve) => setTimeout(resolve, checkInterval));
+        waited += checkInterval;
+        qrCode = WhatsAppService.getPendingQR(id);
+      }
+    }
 
     if (!qrCode) {
       return res.status(404).json({ error: "QR code not available" });

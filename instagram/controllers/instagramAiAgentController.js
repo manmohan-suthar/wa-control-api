@@ -2,6 +2,7 @@ import OpenRouterSettings from "../../models/OpenRouterSettings.js";
 import InstagramSession from "../models/InstagramSession.js";
 import InstagramAiAgent from "../models/InstagramAiAgent.js";
 import InstagramAiReplyLog from "../models/InstagramAiReplyLog.js";
+import InstagramProcessedComment from "../models/InstagramProcessedComment.js";
 import InstagramService from "../services/InstagramService.js";
 
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
@@ -36,6 +37,59 @@ function buildRepliedCommentKeys(log) {
   }
 
   return keys;
+}
+
+function normalizeLower(value) {
+  return trimText(value, 500).toLowerCase();
+}
+
+function getMediaCursor(agent, mediaId) {
+  return agent?.commentSyncState?.mediaCursors?.[mediaId]?.lastCommentId || "";
+}
+
+async function setMediaCursor(agentId, mediaId, lastCommentId) {
+  if (!agentId || !mediaId || !lastCommentId) return;
+  await InstagramAiAgent.updateOne(
+    { _id: agentId },
+    {
+      $set: {
+        [`commentSyncState.mediaCursors.${mediaId}.lastCommentId`]:
+          lastCommentId,
+        "commentSyncState.lastSyncAt": new Date(),
+      },
+    },
+  );
+}
+
+async function buildProcessedCommentKeySets(userId, agentId) {
+  const processedDocs = await InstagramProcessedComment.find({
+    userId,
+    agentId,
+  })
+    .select("commentId mediaId username commentText status")
+    .lean();
+
+  const processedCommentIds = new Set();
+  const processedFallbackKeys = new Set();
+
+  processedDocs.forEach((doc) => {
+    const commentId = trimText(doc.commentId, 120);
+    const mediaId = trimText(doc.mediaId, 120);
+    const username = normalizeLower(doc.username);
+    const commentText = normalizeLower(doc.commentText);
+
+    if (commentId) processedCommentIds.add(commentId);
+    if (mediaId && commentId) {
+      processedFallbackKeys.add(`media:${mediaId}:comment:${commentId}`);
+    }
+    if (mediaId && username && commentText) {
+      processedFallbackKeys.add(
+        `fallback:${mediaId}:${username}:${commentText}`,
+      );
+    }
+  });
+
+  return { processedCommentIds, processedFallbackKeys };
 }
 
 function extractJson(text) {
@@ -378,13 +432,6 @@ export async function getLogs(req, res) {
 
 export async function fetchPendingComments(req, res) {
   try {
-    const sinceParam = String(req.query?.since || "").trim();
-    const sinceDate = sinceParam ? new Date(sinceParam) : null;
-    const cutoffTime =
-      sinceDate && !Number.isNaN(sinceDate.getTime())
-        ? sinceDate.getTime()
-        : null;
-
     const agent = await InstagramAiAgent.findOne({
       userId: req.user._id,
     }).lean();
@@ -395,110 +442,40 @@ export async function fetchPendingComments(req, res) {
         .json({ success: false, error: "Create an Instagram AI agent first" });
     }
 
-    // Fetch recent media with comments
-    const result = await InstagramService.fetchRecentMediaWithComments(
-      req.user._id,
-      { limit: 25, commentsLimit: 100 },
-    );
+    // NOTE: Comments now arrive via webhooks (POST /api/webhook)
+    // This endpoint queries processed comments from the database instead of polling Instagram
+    // All auto-reply processing is triggered by webhook events, not by this endpoint
 
-    console.log(
-      `[fetchPendingComments] Result success: ${result.success}, Media count: ${result.data?.length || 0}`,
-    );
-
-    if (!result.success) {
-      console.error(`[fetchPendingComments] Error: ${result.error}`);
-      return res.status(400).json({ success: false, error: result.error });
-    }
-
-    if (!result.data || result.data.length === 0) {
-      console.warn(`[fetchPendingComments] No media returned from Instagram`);
-      return res.json({
-        success: true,
-        data: {
-          agent,
-          pendingComments: [],
-          count: 0,
-          debug: "No media found",
-        },
-      });
-    }
-
-    // Count total comments from Instagram
-    let totalCommentsFromAPI = 0;
-    result.data.forEach((m) => {
-      if (m.comments && m.comments.length > 0) {
-        totalCommentsFromAPI += m.comments.length;
-      }
-    });
-    console.log(
-      `[fetchPendingComments] Total comments from Instagram API: ${totalCommentsFromAPI}`,
-    );
-
-    // Filter out comments that already have replies in the log
-    const repliedLogs = await InstagramAiReplyLog.find({
+    // Query unprocessed or currently processing comments from InstagramProcessedComment collection
+    // Status progression: processing -> replied|skipped|failed
+    const pendingRecords = await InstagramProcessedComment.find({
       userId: req.user._id,
-      "comment.text": { $exists: true, $ne: "" },
+      agentId: agent._id,
+      // Include processing (waiting for auto-reply) or pending status
+      status: { $in: ["processing", "pending"] },
     })
-      .select("comment.id comment.text comment.username post.id")
+      .sort({ processedAt: -1 })
       .lean();
 
     console.log(
-      `[fetchPendingComments] Already replied logs: ${repliedLogs.length}`,
+      `[fetchPendingComments] Found ${pendingRecords.length} comments awaiting auto-reply from webhooks`,
     );
 
-    const repliedCommentKeys = new Set();
-    repliedLogs.forEach((log) => {
-      buildRepliedCommentKeys(log).forEach((key) =>
-        repliedCommentKeys.add(key),
-      );
-    });
-
-    const pendingComments = [];
-    let filteredByTimestamp = 0;
-
-    result.data.forEach((media) => {
-      if (media.comments && media.comments.length > 0) {
-        media.comments.forEach((comment) => {
-          // Check timestamp filter
-          const commentTime = comment.timestamp
-            ? new Date(comment.timestamp).getTime()
-            : null;
-          if (cutoffTime && commentTime && commentTime < cutoffTime) {
-            filteredByTimestamp++;
-            return;
-          }
-
-          const commentId = trimText(comment.id, 120);
-          const mediaId = trimText(media.id, 120);
-          const candidateKeys = [
-            `comment:${commentId}`,
-            `media:${mediaId}:comment:${commentId}`,
-            `fallback:${mediaId}:${normalizeKeyPart(comment.username)}:${normalizeKeyPart(comment.text)}`,
-          ];
-
-          // Check if already replied
-          const alreadyReplied = candidateKeys.some((key) =>
-            repliedCommentKeys.has(key),
-          );
-          if (!alreadyReplied) {
-            pendingComments.push({
-              mediaId: media.id,
-              mediaCaption: media.caption,
-              mediaType: media.media_type,
-              mediaUrl: media.media_url,
-              likeCount: media.like_count || 0,
-              commentsCount: media.comments_count || 0,
-              permalink: media.permalink,
-              comment,
-            });
-          }
-        });
-      }
-    });
-
-    console.log(
-      `[fetchPendingComments] Pending comments: ${pendingComments.length}, Filtered by timestamp: ${filteredByTimestamp}`,
-    );
+    const pendingComments = pendingRecords.map((record) => ({
+      mediaId: record.mediaId,
+      comment: {
+        id: record.commentId,
+        text: record.commentText,
+        username: record.username,
+        timestamp: record.processedAt,
+      },
+      mediaCaption: "Webhook comment",
+      mediaType: "unknown",
+      mediaUrl: "",
+      likeCount: 0,
+      commentsCount: 0,
+      permalink: "",
+    }));
 
     res.json({
       success: true,
@@ -506,6 +483,8 @@ export async function fetchPendingComments(req, res) {
         agent,
         pendingComments,
         count: pendingComments.length,
+        debug:
+          "Webhook-based architecture: comments arrive via /api/webhook and auto-reply is automatic",
       },
     });
   } catch (err) {
@@ -529,7 +508,14 @@ export async function generateAndPostReply(req, res) {
       username,
     } = req.body || {};
 
+    console.log(
+      `[generateAndPostReply] START: commentId=${commentId}, text="${commentText}", username=${username}`,
+    );
+
     if (!commentId || !commentText) {
+      console.warn(
+        `[generateAndPostReply] Validation failed: commentId=${commentId}, commentText=${commentText}`,
+      );
       return res
         .status(400)
         .json({ success: false, error: "commentId and commentText required" });
@@ -538,14 +524,37 @@ export async function generateAndPostReply(req, res) {
     const agent = await InstagramAiAgent.findOne({
       userId: req.user._id,
     }).lean();
+    const session = await InstagramSession.findOne({
+      userId: req.user._id,
+    }).lean();
+    const igUsername = normalizeLower(session?.graph?.instagramUsername);
+
+    console.log(
+      `[generateAndPostReply] Lookups: agent=${agent?._id}, session=${session?._id}, igUsername=${igUsername}`,
+    );
 
     if (!agent) {
+      console.warn(
+        `[generateAndPostReply] No agent found for userId=${req.user._id}`,
+      );
       return res
         .status(400)
         .json({ success: false, error: "Create an Instagram AI agent first" });
     }
 
     const settings = await getOpenRouterSettings();
+    console.log(
+      `[generateAndPostReply] OpenRouter settings: hasApiKey=${!!settings?.apiKey}, model=${settings?.model || DEFAULT_MODEL}`,
+    );
+
+    if (!settings?.apiKey) {
+      console.warn(`[generateAndPostReply] No OpenRouter API key configured`);
+      return res.status(400).json({
+        success: false,
+        error: "OpenRouter API key not configured. Set it in admin settings.",
+      });
+    }
+
     const model = settings.model || DEFAULT_MODEL;
 
     const promptAccount = {
@@ -572,7 +581,55 @@ export async function generateAndPostReply(req, res) {
       username: trimText(username, 120),
     };
 
+    // Skip own comments and replies-to-replies early.
+    if (
+      igUsername &&
+      normalizeLower(normalizedComment.username) === igUsername
+    ) {
+      return res.json({
+        success: true,
+        data: {
+          action: "SKIPPED",
+          posted: false,
+          reason: "Own comment ignored",
+        },
+      });
+    }
+
+    // Acquire an idempotent processing record before any AI or Instagram call.
+    try {
+      await InstagramProcessedComment.create({
+        userId: req.user._id,
+        agentId: agent._id,
+        commentId,
+        mediaId: normalizedPost.id,
+        parentId: trimText(
+          req.body?.parentId || req.body?.comment?.parent_id || "",
+          120,
+        ),
+        username: normalizedComment.username,
+        commentText: normalizedComment.text,
+        status: "processing",
+        processedAt: new Date(),
+      });
+    } catch (lockError) {
+      if (lockError?.code === 11000) {
+        return res.json({
+          success: true,
+          data: {
+            action: "SKIPPED",
+            posted: false,
+            reason: "Comment already processed",
+          },
+        });
+      }
+      throw lockError;
+    }
+
     // Generate reply using AI
+    console.log(
+      `[generateAndPostReply] Calling OpenRouter: model=${model}, commentText="${commentText}"`,
+    );
     const { content } = await callOpenRouterJson({
       apiKey: settings.apiKey,
       model,
@@ -587,14 +644,23 @@ export async function generateAndPostReply(req, res) {
       max_tokens: 220,
     });
 
+    console.log(
+      `[generateAndPostReply] OpenRouter response: content="${content?.substring(0, 100) || "empty"}"`,
+    );
+
     const parsed = extractJson(content);
     const category = String(parsed.category || "GENERAL").toUpperCase();
     const sentiment = String(parsed.sentiment || "NEUTRAL").toUpperCase();
     const action = String(parsed.action || "").trim() || "REPLY";
     const reply = trimText(parsed.reply || "", 500);
 
+    console.log(
+      `[generateAndPostReply] Parsed AI response: action=${action}, reply="${reply}"`,
+    );
+
     // If action is IGNORE, don't post reply
     if (action === "IGNORE") {
+      console.log(`[generateAndPostReply] AI decided to IGNORE: ${reply}`);
       const log = await InstagramAiReplyLog.create({
         agentId: agent._id,
         userId: req.user._id,
@@ -611,6 +677,22 @@ export async function generateAndPostReply(req, res) {
         rawResponse: parsed,
       });
 
+      await InstagramProcessedComment.updateOne(
+        {
+          userId: req.user._id,
+          agentId: agent._id,
+          commentId,
+        },
+        {
+          $set: {
+            status: "skipped",
+            aiReply: "",
+            processedAt: new Date(),
+            repliedAt: null,
+          },
+        },
+      );
+
       return res.json({
         success: true,
         data: {
@@ -626,15 +708,23 @@ export async function generateAndPostReply(req, res) {
     }
 
     // Post reply to Instagram
+    console.log(
+      `[generateAndPostReply] Posting reply to Instagram: commentId=${commentId}, reply="${reply}"`,
+    );
     const postResult = await InstagramService.replyToComment(
       req.user._id,
       commentId,
       reply,
     );
 
+    console.log(
+      `[generateAndPostReply] Instagram reply result: success=${postResult.success}, error="${postResult.error || "none"}"`,
+    );
+
     // Like the comment after successfully posting reply
     if (postResult.success) {
       await InstagramService.likeComment(req.user._id, commentId);
+      console.log(`[generateAndPostReply] Liked comment: ${commentId}`);
     }
 
     const log = await InstagramAiReplyLog.create({
@@ -661,6 +751,27 @@ export async function generateAndPostReply(req, res) {
       },
     );
 
+    await InstagramProcessedComment.updateOne(
+      {
+        userId: req.user._id,
+        agentId: agent._id,
+        commentId,
+      },
+      {
+        $set: {
+          status: postResult.success ? "replied" : "failed",
+          aiReply: reply,
+          error: postResult.success ? "" : postResult.error || "Reply failed",
+          processedAt: new Date(),
+          repliedAt: postResult.success ? new Date() : null,
+        },
+      },
+    );
+
+    console.log(
+      `[generateAndPostReply] COMPLETE: success=${postResult.success}, commentId=${commentId}, posted=${postResult.success}`,
+    );
+
     res.json({
       success: postResult.success,
       data: {
@@ -676,6 +787,10 @@ export async function generateAndPostReply(req, res) {
       },
     });
   } catch (err) {
+    console.error(
+      `[generateAndPostReply] EXCEPTION: commentId=${req.body?.commentId}, error=${err.message}`,
+      err.stack,
+    );
     res.status(500).json({ success: false, error: err.message });
   }
 }
