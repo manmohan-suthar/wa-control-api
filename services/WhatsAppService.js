@@ -299,6 +299,7 @@ class WhatsAppService {
           sessionId,
           isAuthenticated,
           wsState: liveSock?.ws?.readyState,
+          activeSockets: this.sockets.size,
         });
 
         // If the session is authenticated, treat it as healthy. During
