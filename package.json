@@ -18,8 +18,10 @@
   "license": "MIT",
   "dependencies": {
     "@hapi/boom": "^10.0.1",
+    "@itsliaaa/baileys": "^0.3.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.16.0",
+    "baileys_helper": "^1.0.6",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.76.6",
     "cors": "^2.8.5",

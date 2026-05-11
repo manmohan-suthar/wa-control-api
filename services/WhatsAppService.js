@@ -1,9 +1,16 @@
-import makeWASocket, {
+// import makeWASocket, {
+//   useMultiFileAuthState,
+//   DisconnectReason,
+//   fetchLatestBaileysVersion,
+//   Browsers,
+// } from "@whiskeysockets/baileys";
+import {
+  default as makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
-} from "@whiskeysockets/baileys";
+} from "@itsliaaa/baileys";
 import { Boom } from "@hapi/boom";
 import mongoose from "mongoose";
 import * as qrcode from "qrcode";
@@ -1029,4 +1036,10 @@ class WhatsAppService {
   }
 }
 
-export default new WhatsAppService();
+const whatsappService = new WhatsAppService();
+
+export const getSessionSocket = (sessionId) => {
+  return whatsappService.sockets.get(sessionId);
+};
+
+export default whatsappService;

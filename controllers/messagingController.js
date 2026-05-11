@@ -5,6 +5,7 @@ import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { sendSubscriptionError } from "../utils/subscription.js";
+import MessageTemplateLocal from "../models/MessageTemplateLocal.js";
 
 export const sendMessage = async (req, res) => {
   let tempFilePath = null;
@@ -16,15 +17,49 @@ export const sendMessage = async (req, res) => {
     //   Internal/legacy: { sessionId, phoneNumber, message, contactName }
     const sessionId = body.sessionId || body.session;
     const phoneNumber = body.phoneNumber || body.to;
-    const { message, contactName, mediaBase64, mediaType, mediaName } = body;
+    const {
+      message,
+      contactName,
+      mediaBase64,
+      mediaType,
+      mediaName,
+      type,
+      templetId,
+      data,
+    } = body;
+
+    // If payload is an interactive template (type present), forward to interactive handler
+    if (type) {
+      try {
+        // Lazy import to avoid circular deps
+        const { sendInteractiveMessage } =
+          await import("./interactiveController.js");
+
+        // Build a fake req object for the interactive handler
+        const fakeReq = {
+          body: {
+            sessionId: sessionId,
+            to: phoneNumber,
+            type: type,
+            data: data || body.data || {},
+          },
+        };
+
+        return await sendInteractiveMessage(fakeReq, res);
+      } catch (err) {
+        console.error(
+          "Failed to send interactive message via /api/messages/send:",
+          err.message,
+        );
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
 
     if (!sessionId || !phoneNumber || !message) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "session (or sessionId), to (or phoneNumber), and message are required",
-        });
+      return res.status(400).json({
+        error:
+          "session (or sessionId), to (or phoneNumber), and message are required",
+      });
     }
 
     let mediaPath = null;
@@ -140,11 +175,9 @@ export const updateMessageStatus = async (req, res) => {
     // Validate status
     const validStatuses = ["pending", "sent", "failed", "delivered", "read"];
     if (!validStatuses.includes(status)) {
-      return res
-        .status(400)
-        .json({
-          error: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
-        });
+      return res.status(400).json({
+        error: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+      });
     }
 
     // Build update object
@@ -179,4 +212,69 @@ export const updateMessageStatus = async (req, res) => {
   }
 };
 
-export default { sendMessage, getSessionMessages, updateMessageStatus };
+export const saveMessageTemplate = async (req, res) => {
+  try {
+    const { name, type, data, sessionId = "" } = req.body || {};
+
+    if (!name || !type || !data || typeof data !== "object") {
+      return res.status(400).json({
+        success: false,
+        error: "name, type and data are required",
+      });
+    }
+
+    const template = await MessageTemplateLocal.create({
+      userId: req.user._id,
+      name,
+      type,
+      data,
+      sessionId,
+    });
+
+    return res.status(201).json({ success: true, data: template });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+export const getMessageTemplates = async (req, res) => {
+  try {
+    const templates = await MessageTemplateLocal.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ success: true, data: templates });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+export const deleteMessageTemplate = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = await MessageTemplateLocal.findOneAndDelete({
+      _id: id,
+      userId: req.user._id,
+    });
+
+    if (!deleted) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Template not found" });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+export default {
+  sendMessage,
+  getSessionMessages,
+  updateMessageStatus,
+  saveMessageTemplate,
+  getMessageTemplates,
+  deleteMessageTemplate,
+};

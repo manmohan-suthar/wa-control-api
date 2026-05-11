@@ -37,6 +37,8 @@ import CampaignService from "./services/CampaignService.js";
 import SubscriptionService from "./services/SubscriptionService.js";
 import Campaign from "./models/Campaign.js";
 import { startCampaignById } from "./controllers/campaignController.js";
+import nativeMessageRoutes from "./routes/nativeMessageRoutes.js";
+import interactiveRoutes from "./routes/interactiveRoutes.js";
 
 const app = express();
 const httpServer = createServer(app);
@@ -85,6 +87,8 @@ app.use("/api/webhook", webhookRoutes);
 app.use("/api/google-review", googleReviewRoutes);
 app.use("/api/pinterest", pinterestRoutes);
 app.use("/api/reels", reelRoutes);
+app.use("/api/messages", interactiveRoutes);
+app.use(nativeMessageRoutes);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
