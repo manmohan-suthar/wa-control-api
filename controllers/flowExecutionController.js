@@ -67,7 +67,7 @@ export const executeFlowOnMessage = async (
           });
         }
 
-        return;
+        return { consumed: true, reason: "pending_input" };
       }
     }
 
@@ -77,7 +77,7 @@ export const executeFlowOnMessage = async (
     }).select("_id");
 
     if (!session) {
-      return;
+      return { consumed: false };
     }
 
     // Find flows for this session
@@ -117,10 +117,14 @@ export const executeFlowOnMessage = async (
       }
 
       // Process first matching flow only to avoid overlapping runtime states.
+      return { consumed: true, reason: "flow_triggered" };
       break;
     }
+
+    return { consumed: false };
   } catch (error) {
     console.error("Error executing flow on message:", error);
+    return { consumed: false, error: error.message };
   }
 };
 

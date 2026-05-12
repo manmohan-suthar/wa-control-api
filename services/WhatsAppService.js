@@ -238,6 +238,32 @@ class WhatsAppService {
     return `${normalizedDigits}@s.whatsapp.net`;
   }
 
+  extractIncomingText(message) {
+    const payload = message?.message;
+    if (!payload) return "";
+
+    const unwrapped = payload.ephemeralMessage?.message || payload;
+    const candidates = [
+      unwrapped.conversation,
+      unwrapped.extendedTextMessage?.text,
+      unwrapped.imageMessage?.caption,
+      unwrapped.videoMessage?.caption,
+      unwrapped.documentMessage?.caption,
+      unwrapped.buttonsResponseMessage?.selectedButtonId,
+      unwrapped.listResponseMessage?.singleSelectReply?.selectedRowId,
+      unwrapped.templateButtonReplyMessage?.selectedId,
+      unwrapped.interactiveResponseMessage?.body?.text,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+
+    return "";
+  }
+
   buildMessagePayload(message, mediaPath = null, mediaType = null) {
     if (!mediaPath || !mediaType) {
       return { text: message || "" };
@@ -733,6 +759,59 @@ class WhatsAppService {
           }, delay);
         } else {
           await this.handleSessionStateChange(sessionId, "disconnected");
+        }
+      }
+    });
+
+    const sessionRecord = await SessionModel.findOne({ sessionId })
+      .select("userId")
+      .lean();
+    const userId = sessionRecord?.userId?.toString() || null;
+
+    sock.ev.on("messages.upsert", async ({ messages = [], type }) => {
+      if (type && type !== "notify") return;
+
+      for (const msg of messages) {
+        try {
+          if (!msg?.message || msg.key?.fromMe) continue;
+
+          const remoteJid = msg.key?.remoteJid;
+          if (!remoteJid || remoteJid === "status@broadcast") continue;
+          if (remoteJid.endsWith("@g.us")) continue;
+
+          const text = this.extractIncomingText(msg);
+          if (!text) continue;
+
+          console.log("[WA MESSAGE] incoming text", {
+            sessionId,
+            remoteJid,
+            text: text.slice(0, 80),
+          });
+
+          if (userId) {
+            const flowResult = await executeFlowOnMessage(
+              sessionId,
+              remoteJid,
+              text,
+              userId,
+            );
+
+            if (flowResult?.consumed) {
+              continue;
+            }
+          }
+
+          await handleIncomingMessage(
+            sessionId,
+            remoteJid,
+            text,
+            async (jid, reply) => sock.sendMessage(jid, { text: reply }),
+          );
+        } catch (err) {
+          console.error("[WA MESSAGE] handler error", {
+            sessionId,
+            error: err.message,
+          });
         }
       }
     });

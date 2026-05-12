@@ -202,6 +202,8 @@ router.post("/agents", async (req, res) => {
         $set: {
           agentName: agentName || "AI Auto-Reply Agent",
           isActive: true,
+          autoReplyEnabled: true,
+          autoReplyStartedAt: new Date(),
           ...(knowledgeSummaryId ? { knowledgeSummaryId } : {}),
           ...(config ? { config } : {}),
         },
@@ -366,34 +368,21 @@ router.post("/test-chat", async (req, res) => {
 router.get("/status", async (req, res) => {
   try {
     const settings = await OpenRouterSettings.findOne({ key: "global" }).lean();
+    const agent = await AiAgent.findOne({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .lean();
     res.json({
       success: true,
       data: {
         configured: !!settings?.apiKey,
         model: settings?.model || "openai/gpt-4o-mini",
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ── Get agent status with auto-reply state ────────────────────────────────────
-router.get("/status", async (req, res) => {
-  try {
-    const agent = await AiAgent.findOne({ userId: req.user._id });
-    if (!agent) {
-      return res.json({ success: true, data: { agent: null } });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        agent: {
-          ...agent.toObject(),
-          autoReplyEnabled: agent.autoReplyEnabled,
-          autoReplyStartedAt: agent.autoReplyStartedAt,
-        },
+        agent: agent
+          ? {
+              ...agent,
+              autoReplyEnabled: !!agent.autoReplyEnabled,
+              autoReplyStartedAt: agent.autoReplyStartedAt,
+            }
+          : null,
       },
     });
   } catch (err) {
@@ -404,11 +393,17 @@ router.get("/status", async (req, res) => {
 // ── Start auto-reply ───────────────────────────────────────────────────────
 router.post("/start-auto-reply", async (req, res) => {
   try {
+    const { agentId } = req.body || {};
+    const query = agentId ? { _id: agentId, userId: req.user._id } : { userId: req.user._id };
+
     const agent = await AiAgent.findOneAndUpdate(
-      { userId: req.user._id },
+      query,
       {
-        autoReplyEnabled: true,
-        autoReplyStartedAt: new Date(),
+        $set: {
+          isActive: true,
+          autoReplyEnabled: true,
+          autoReplyStartedAt: new Date(),
+        },
       },
       { new: true },
     );
@@ -431,11 +426,17 @@ router.post("/start-auto-reply", async (req, res) => {
 // ── Stop auto-reply ────────────────────────────────────────────────────────
 router.post("/stop-auto-reply", async (req, res) => {
   try {
+    const { agentId } = req.body || {};
+    const query = agentId ? { _id: agentId, userId: req.user._id } : { userId: req.user._id };
+
     const agent = await AiAgent.findOneAndUpdate(
-      { userId: req.user._id },
+      query,
       {
-        autoReplyEnabled: false,
-        autoReplyStartedAt: null,
+        $set: {
+          isActive: false,
+          autoReplyEnabled: false,
+          autoReplyStartedAt: null,
+        },
       },
       { new: true },
     );
