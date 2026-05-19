@@ -26,6 +26,7 @@ const authMiddleware = async (req, res, next) => {
         user.email,
       );
       req.user = user;
+      req.authMode = "api-key";
       return next();
     }
 
@@ -66,6 +67,7 @@ const authMiddleware = async (req, res, next) => {
         user.email,
       );
       req.user = user;
+      req.authMode = "api-key";
       return next();
     }
 
@@ -81,6 +83,7 @@ const authMiddleware = async (req, res, next) => {
 
     console.log("🔐 [AUTH] ✅ JWT OK — user:", String(user._id), user.email);
     req.user = user;
+    req.authMode = "jwt";
     next();
   } catch (err) {
     console.error("🔐 [AUTH] 💥", err.message);

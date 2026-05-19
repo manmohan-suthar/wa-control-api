@@ -4,6 +4,14 @@ import {
 } from "@whiskeysockets/baileys";
 
 const normalizeButtonParams = (btn = {}) => {
+  // Handle curl format: { text: "...", code: "..." }
+  if (btn.text && btn.code !== undefined) {
+    return {
+      display_text: btn.text,
+      copy_code: btn.code,
+    };
+  }
+
   if (btn.params && typeof btn.params === "object") {
     return btn.params;
   }
@@ -31,23 +39,38 @@ export async function sendCTACopy(sock, to, data) {
       buttonParamsJson: JSON.stringify(normalizeButtonParams(btn)),
     }));
 
+    const interactiveData = {
+      body: {
+        text: data.body || "Your OTP",
+      },
+      nativeFlowMessage:
+        proto.Message.InteractiveMessage.NativeFlowMessage.create({
+          buttons,
+        }),
+    };
+
+    // Add optional header if provided
+    if (data.header) {
+      interactiveData.header = {
+        title: data.header,
+        hasMediaAttachment: false,
+      };
+    }
+
+    // Add optional footer
+    if (data.footer) {
+      interactiveData.footer = {
+        text: data.footer,
+      };
+    }
+
     const msg = generateWAMessageFromContent(
       jid,
       {
         viewOnceMessage: {
           message: {
-            interactiveMessage: proto.Message.InteractiveMessage.create({
-              body: {
-                text: data.body || "Your OTP",
-              },
-              footer: {
-                text: data.footer || "",
-              },
-              nativeFlowMessage:
-                proto.Message.InteractiveMessage.NativeFlowMessage.create({
-                  buttons,
-                }),
-            }),
+            interactiveMessage:
+              proto.Message.InteractiveMessage.create(interactiveData),
           },
         },
       },
@@ -61,6 +84,7 @@ export async function sendCTACopy(sock, to, data) {
     return {
       success: true,
       type: "cta_copy",
+      messageId: msg?.key?.id,
     };
   } catch (err) {
     throw new Error(`CTA Copy failed: ${err.message}`);

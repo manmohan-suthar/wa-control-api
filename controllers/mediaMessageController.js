@@ -33,6 +33,7 @@ export const sendMediaMessage = async (req, res) => {
       contactName,
       media,
       file: req.file || null,
+      source: req.authMode === "api-key" ? "api" : "ui",
     });
 
     return res.json(result);

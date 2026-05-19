@@ -25,37 +25,49 @@ export async function sendCTACall(sock, to, data) {
   try {
     const jid = to.includes("@s.whatsapp.net") ? to : `${to}@s.whatsapp.net`;
 
-    const buttons = (data.buttons || []).map((btn) => ({
-      name: "cta_call",
-      buttonParamsJson: JSON.stringify({
-        display_text: btn.text,
-        phone_number: btn.phone,
-      }),
-    }));
+    // Handle curl format: buttons can be a single object
+    let buttons = [];
+    if (data.buttons) {
+      let buttonArray = Array.isArray(data.buttons) ? data.buttons : [data.buttons];
+      buttons = buttonArray.map((btn) => ({
+        name: "cta_call",
+        buttonParamsJson: JSON.stringify({
+          display_text: btn.text || btn.params?.display_text,
+          phone_number: btn.phone || btn.params?.phone_number,
+        }),
+      }));
+    }
+
+    const interactiveData = {
+      body: {
+        text: data.body || "Call us",
+      },
+      nativeFlowMessage: {
+        buttons,
+      },
+    };
+
+    // Add optional header
+    if (data.header) {
+      interactiveData.header = {
+        title: data.header,
+        hasMediaAttachment: false,
+      };
+    }
+
+    // Add optional footer
+    if (data.footer) {
+      interactiveData.footer = {
+        text: data.footer,
+      };
+    }
 
     const msg = generateWAMessageFromContent(
       jid,
       {
         viewOnceMessage: {
           message: {
-            interactiveMessage: {
-              body: {
-                text: data.body || "Call us",
-              },
-
-              footer: {
-                text: data.footer || "",
-              },
-
-              header: {
-                title: data.title || "Call",
-                hasMediaAttachment: false,
-              },
-
-              nativeFlowMessage: {
-                buttons,
-              },
-            },
+            interactiveMessage: interactiveData,
           },
         },
       },
@@ -65,6 +77,12 @@ export async function sendCTACall(sock, to, data) {
     await sock.relayMessage(jid, msg.message, {
       messageId: msg.key.id,
     });
+
+    return {
+      success: true,
+      type: "cta_call",
+      messageId: msg?.key?.id,
+    };
   } catch (error) {
     throw new Error(`CTA Call failed: ${error.message}`);
   }

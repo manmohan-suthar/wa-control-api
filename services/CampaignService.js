@@ -164,8 +164,15 @@ class CampaignService {
         phoneNumber,
         message,
         status: "pending",
+        source: "campaign",
       });
-      await msgDoc.save();
+      try {
+        await msgDoc.save();
+        console.debug &&
+          console.debug(`Message saved: ${msgDoc._id} user:${campaign.userId}`);
+      } catch (e) {
+        // ignore
+      }
 
       this.emit("message:processing", {
         campaignId: campaign._id,
@@ -218,6 +225,8 @@ class CampaignService {
           index: i,
           total: numbers.length,
         });
+        console.error &&
+          console.error(`Message failed: ${msgDoc._id} error:${err.message}`);
       }
 
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -324,6 +333,7 @@ class CampaignService {
     contactName = "",
     mediaPath = null,
     mediaType = null,
+    options = {},
   ) {
     const session = await this.findUserSession(userId, sessionId);
 
@@ -344,6 +354,8 @@ class CampaignService {
       if (jid.length === 10) jid = "91" + jid;
     }
 
+    const source = options.source || "ui";
+
     const msgDoc = new Message({
       sessionId: session._id,
       phoneNumber: jid,
@@ -351,6 +363,7 @@ class CampaignService {
       message,
       messageType: "single",
       status: "pending",
+      source,
     });
 
     try {
@@ -370,6 +383,12 @@ class CampaignService {
       msgDoc.status = "sent";
       msgDoc.sentAt = new Date();
       await msgDoc.save();
+      try {
+        console.debug &&
+          console.debug(`Message saved: ${msgDoc._id} user:${userId}`);
+      } catch (e) {
+        // ignore
+      }
 
       return {
         success: true,
@@ -382,6 +401,14 @@ class CampaignService {
       msgDoc.status = "failed";
       msgDoc.error = err.message;
       await msgDoc.save();
+      try {
+        console.error &&
+          console.error(
+            `Message failed: ${msgDoc._id} user:${userId} error:${err.message}`,
+          );
+      } catch (e) {
+        // ignore
+      }
 
       throw err;
     }

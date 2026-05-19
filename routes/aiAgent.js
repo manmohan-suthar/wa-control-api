@@ -34,12 +34,10 @@ router.post("/knowledge/summarize", async (req, res) => {
 
     const settings = await OpenRouterSettings.findOne({ key: "global" }).lean();
     if (!settings?.apiKey)
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: "OpenRouter API key not configured by admin",
-        });
+      return res.status(400).json({
+        success: false,
+        error: "OpenRouter API key not configured by admin",
+      });
 
     const model = settings.model || "openai/gpt-4o-mini";
     const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -68,12 +66,10 @@ router.post("/knowledge/summarize", async (req, res) => {
 
     const data = await resp.json();
     if (!resp.ok)
-      return res
-        .status(502)
-        .json({
-          success: false,
-          error: data?.error?.message || "OpenRouter request failed",
-        });
+      return res.status(502).json({
+        success: false,
+        error: data?.error?.message || "OpenRouter request failed",
+      });
 
     const summary = (data?.choices?.[0]?.message?.content || "").trim();
     if (!summary)
@@ -241,12 +237,10 @@ router.patch("/agents/:id/session", async (req, res) => {
       sessionId: newSessionId,
     });
     if (conflict && conflict._id.toString() !== req.params.id) {
-      return res
-        .status(409)
-        .json({
-          success: false,
-          error: "Another agent is already assigned to that session",
-        });
+      return res.status(409).json({
+        success: false,
+        error: "Another agent is already assigned to that session",
+      });
     }
 
     const agent = await AiAgent.findOneAndUpdate(
@@ -350,12 +344,10 @@ router.post("/test-chat", async (req, res) => {
 
     const data = await resp.json();
     if (!resp.ok)
-      return res
-        .status(502)
-        .json({
-          success: false,
-          error: data?.error?.message || "OpenRouter error",
-        });
+      return res.status(502).json({
+        success: false,
+        error: data?.error?.message || "OpenRouter error",
+      });
 
     const reply = (data?.choices?.[0]?.message?.content || "").trim();
     res.json({ success: true, data: { reply, model } });
@@ -394,7 +386,9 @@ router.get("/status", async (req, res) => {
 router.post("/start-auto-reply", async (req, res) => {
   try {
     const { agentId } = req.body || {};
-    const query = agentId ? { _id: agentId, userId: req.user._id } : { userId: req.user._id };
+    const query = agentId
+      ? { _id: agentId, userId: req.user._id }
+      : { userId: req.user._id };
 
     const agent = await AiAgent.findOneAndUpdate(
       query,
@@ -427,7 +421,9 @@ router.post("/start-auto-reply", async (req, res) => {
 router.post("/stop-auto-reply", async (req, res) => {
   try {
     const { agentId } = req.body || {};
-    const query = agentId ? { _id: agentId, userId: req.user._id } : { userId: req.user._id };
+    const query = agentId
+      ? { _id: agentId, userId: req.user._id }
+      : { userId: req.user._id };
 
     const agent = await AiAgent.findOneAndUpdate(
       query,

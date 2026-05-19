@@ -258,6 +258,7 @@ export const sendChatMessage = async (req, res) => {
       "",
       mediaPath,
       mediaType,
+      { source: req.authMode === "api-key" ? "api" : "ui" },
     );
 
     // Save outgoing message to WaChatMessage

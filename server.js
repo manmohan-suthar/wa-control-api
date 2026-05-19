@@ -58,7 +58,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("WhatsApp API is running v3.0.2 by ME");
+  res.send("WhatsApp API is running v3.1.2 by ME");
 });
 
 // Serve uploaded files

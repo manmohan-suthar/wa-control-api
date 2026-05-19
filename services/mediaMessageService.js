@@ -140,6 +140,7 @@ class MediaMessageService {
     contactName = "",
     media = null,
     file = null,
+    source = "ui",
   }) {
     const session = await CampaignService.findUserSession(userId, sessionId);
 
@@ -180,6 +181,7 @@ class MediaMessageService {
       message: effectiveMessage,
       messageType: "single",
       status: "pending",
+      source,
     });
 
     let tempFilePath = null;
@@ -241,6 +243,14 @@ class MediaMessageService {
       msgDoc.status = "sent";
       msgDoc.sentAt = new Date();
       await msgDoc.save();
+      try {
+        console.debug &&
+          console.debug(
+            `MediaMessage saved: ${msgDoc._id} user:${userId} to:${jid}`,
+          );
+      } catch (e) {
+        // ignore
+      }
 
       return {
         success: true,
@@ -262,6 +272,14 @@ class MediaMessageService {
       msgDoc.status = "failed";
       msgDoc.error = err.message;
       await msgDoc.save();
+      try {
+        console.error &&
+          console.error(
+            `MediaMessage failed: ${msgDoc._id} user:${userId} error:${err.message}`,
+          );
+      } catch (e) {
+        // ignore
+      }
 
       throw err;
     } finally {

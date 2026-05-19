@@ -781,9 +781,8 @@ async function executeGoogleSheetsNode(sheetsNode, flowUserId, context) {
       limited.forEach((row, ri) => {
         if (headerDefs.length) {
           headerDefs.forEach((h, i) => {
-            context[
-              `${prefix}.${ri}.${h.replace(/\s+/g, "_").toLowerCase()}`
-            ] = row[i] ?? "";
+            context[`${prefix}.${ri}.${h.replace(/\s+/g, "_").toLowerCase()}`] =
+              row[i] ?? "";
           });
         } else {
           row.forEach((val, i) => {
@@ -1158,7 +1157,11 @@ export const simulateGoogleSheetsNode = async (req, res) => {
 
     // If the browser sent a fresh token, check if the DB record is missing or
     // expired and upsert it so the execution below always finds a valid token.
-    if (clientToken && typeof clientToken === "string" && clientToken.length > 10) {
+    if (
+      clientToken &&
+      typeof clientToken === "string" &&
+      clientToken.length > 10
+    ) {
       const existing = await UserGoogleConnection.findOne({ userId })
         .select("+accessToken")
         .lean();
@@ -1168,7 +1171,12 @@ export const simulateGoogleSheetsNode = async (req, res) => {
       if (isExpiredOrMissing) {
         await UserGoogleConnection.findOneAndUpdate(
           { userId },
-          { $set: { accessToken: clientToken, expiresAt: new Date(Date.now() + 3595 * 1000) } },
+          {
+            $set: {
+              accessToken: clientToken,
+              expiresAt: new Date(Date.now() + 3595 * 1000),
+            },
+          },
           { upsert: true },
         );
       }

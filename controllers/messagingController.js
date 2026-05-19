@@ -35,14 +35,40 @@ export const sendMessage = async (req, res) => {
         const { sendInteractiveMessage } =
           await import("./interactiveController.js");
 
+        // Convert curl format (message object) to internal format (data object)
+        let dataPayload = data || body.data || {};
+
+        if (message && typeof message === "object" && !data) {
+          // Map curl format to internal format
+          let button = null;
+          if (message.button) {
+            // Add type field based on button properties
+            button = { ...message.button };
+            if (button.code && !button.type) button.type = "cta_copy";
+            else if (button.phone && !button.type) button.type = "cta_call";
+            else if (button.url && !button.type) button.type = "cta_url";
+          }
+
+          dataPayload = {
+            header: message.header,
+            body: message.text,
+            footer: message.footer,
+            buttons: button ? [button] : [],
+          };
+        }
+
         // Build a fake req object for the interactive handler
         const fakeReq = {
           body: {
             sessionId: sessionId,
             to: phoneNumber,
             type: type,
-            data: data || body.data || {},
+            data: dataPayload,
           },
+          // Propagate auth/user context so interactive handler can
+          // create Message logs with correct `source` (api vs ui).
+          user: req.user,
+          authMode: req.authMode,
         };
 
         return await sendInteractiveMessage(fakeReq, res);
@@ -94,6 +120,7 @@ export const sendMessage = async (req, res) => {
         contactName,
         mediaPath,
         mediaType,
+        { source: req.authMode === "api-key" ? "api" : "ui" },
       );
 
       res.json(result);

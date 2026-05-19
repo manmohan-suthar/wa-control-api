@@ -50,6 +50,11 @@ const messageSchema = new mongoose.Schema(
       enum: ["single", "campaign"],
       default: "single",
     },
+    source: {
+      type: String,
+      enum: ["ui", "api", "campaign"],
+      default: "ui",
+    },
   },
   {
     timestamps: true,
